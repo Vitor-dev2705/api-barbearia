@@ -1,14 +1,15 @@
 import os
 import requests
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from app.services import (
     limpar_mensagem, agendar_servico, realizar_checkin, 
     gerar_dashboard, atualizar_custos_da_loja,
-    atualizar_preco_servico_db, processar_texto_com_ia
+    atualizar_preco_servico_db, processar_texto_com_ia,
+    obter_duracao_servico, obter_slots_livres
 )
 
 # ==========================================
@@ -26,11 +27,23 @@ class AlterarPreco(BaseModel):
     novo_valor: float
 
 # ==========================================
-# INTEGRAÇÃO EXTERNA (TELEGRAM)
+# INTEGRAÇÃO EXTERNA (TELEGRAM E BOTÕES)
 # ==========================================
 def enviar_mensagem_telegram(chat_id: int, texto: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": texto}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
+
+def enviar_mensagem_com_botoes(chat_id: int, texto: str, botoes: list):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": texto,
+        "reply_markup": {"inline_keyboard": botoes}
+    }
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception:
@@ -42,27 +55,78 @@ def enviar_mensagem_telegram(chat_id: int, texto: str):
 @router.post("/telegram/receber")
 async def bot_recebe_mensagem(request: Request):
     try:
-        # 1. Extração de Dados Iniciais
         dados = await request.json()
+
+        # FLUXO 1: INTERAÇÃO COM BOTÕES (CALLBACK QUERY)
+        if "callback_query" in dados:
+            query = dados["callback_query"]
+            chat_id = query["message"]["chat"]["id"]
+            dados_clique = query["data"]
+            nome_cliente = query["from"]["first_name"]
+
+            if dados_clique.startswith("S|"):
+                servico = dados_clique.split("|")[1]
+                botoes_dias = []
+                hoje = datetime.now()
+                for i in range(5):
+                    data_calc = hoje + timedelta(days=i)
+                    data_iso = data_calc.strftime("%Y-%m-%d")
+                    texto_botao = data_calc.strftime("%d/%m")
+                    if i == 0: texto_botao = f"Hoje ({texto_botao})"
+                    elif i == 1: texto_botao = f"Amanhã ({texto_botao})"
+                    botoes_dias.append([{"text": texto_botao, "callback_data": f"D|{servico}|{data_iso}"}])
+                
+                enviar_mensagem_com_botoes(chat_id, f"📅 Para qual dia você quer o {servico}?", botoes_dias)
+
+            elif dados_clique.startswith("D|"):
+                _, servico, data_iso = dados_clique.split("|")
+                duracao = obter_duracao_servico(servico)
+                horarios_livres = obter_slots_livres(data_iso, duracao)
+                
+                if not horarios_livres:
+                    enviar_mensagem_telegram(chat_id, "Puxa, estamos lotados ou fechados neste dia. Escolha outra data!")
+                else:
+                    botoes_horas = []
+                    linha = []
+                    for h in horarios_livres:
+                        linha.append({"text": h, "callback_data": f"H|{servico}|{data_iso}|{h}"})
+                        if len(linha) == 3:
+                            botoes_horas.append(linha)
+                            linha = []
+                    if linha: 
+                        botoes_horas.append(linha)
+                    
+                    enviar_mensagem_com_botoes(chat_id, "⏰ Selecione um horário livre:", botoes_horas)
+
+            elif dados_clique.startswith("H|"):
+                _, servico, data_iso, hora = dados_clique.split("|")
+                resposta = agendar_servico(nome_cliente, servico, data_iso, hora, 35.0)
+                enviar_mensagem_telegram(chat_id, resposta)
+
+            return {"status": "ok"}
+
+        # FLUXO 2: MENSAGEM DE TEXTO COMUM
         if "message" not in dados:
             return {"status": "ignorado"}
             
         chat_id = dados["message"]["chat"]["id"]
         texto_cru = dados["message"].get("text", "")
         nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
-        
         texto_limpo = limpar_mensagem(texto_cru)
         
-        if texto_limpo in ["ola", "olá", "oi", "bom dia", "boa tarde", "boa noite"]:
-            enviar_mensagem_telegram(chat_id, f"Olá {nome_cliente}! ✂️ Sou o assistente da Barbearia. O que deseja agendar e para qual horário?")
+        if texto_limpo in ["ola", "olá", "oi", "bom dia", "boa tarde", "boa noite", "menu"]:
+            botoes_servicos = [
+                [{"text": "✂️ Corte Simples", "callback_data": "S|Corte Simples"}],
+                [{"text": "🧔 Barba", "callback_data": "S|Barba"}],
+                [{"text": "✂️+🧔 Corte e Barba", "callback_data": "S|Corte e Barba"}]
+            ]
+            enviar_mensagem_com_botoes(chat_id, f"Olá {nome_cliente}! Qual serviço você deseja?", botoes_servicos)
             return {"status": "ok"}
 
-        # Valores padrão caso as extrações falhem
         hora = None
         data_agendamento = datetime.now().strftime("%Y-%m-%d")
         servico = "Corte Simples"
         
-        # 2. Processamento com Inteligência Artificial
         try:
             resultado_ia = processar_texto_com_ia(texto_cru)
             if resultado_ia and isinstance(resultado_ia, dict):
@@ -78,7 +142,6 @@ async def bot_recebe_mensagem(request: Request):
         except Exception:
             pass
 
-        # 3. Fallback (Plano B via Regex)
         if not hora:
             busca = re.search(r'(\d{1,2})\s*[:hH]\s*(\d{2})?', texto_cru)
             if busca:
@@ -87,10 +150,9 @@ async def bot_recebe_mensagem(request: Request):
                 hora = f"{h}:{m}"
 
         if not hora:
-            enviar_mensagem_telegram(chat_id, f"Poxa {nome_cliente}, não consegui entender o horário. Pode enviar no formato 14:30 ou 14h?")
+            enviar_mensagem_telegram(chat_id, f"Não entendi, {nome_cliente}. Digite 'Oi' para ver o menu de botões ou mande o horário desejado (ex: 14:30).")
             return {"status": "ok"}
                 
-        # 4. Efetivação do Agendamento no Banco
         resposta = agendar_servico(nome_cliente, servico, data_agendamento, hora, 35.0)
         enviar_mensagem_telegram(chat_id, resposta)
         return {"status": "ok"}

@@ -69,8 +69,7 @@ def processar_texto_com_ia(texto_cliente: str):
             texto_limpo = texto_limpo.split("```")[1].split("```")[0].strip()
             
         return json.loads(texto_limpo)
-    except Exception as e:
-        print("ERRO DETALHADO DA IA:", e)
+    except Exception:
         return {"data": None, "hora": None, "servico": None}
 
 def limpar_mensagem(mensagem: str):
@@ -119,6 +118,46 @@ def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
 # ==========================================
 # LÓGICA DE AGENDAMENTO E EXPEDIENTE
 # ==========================================
+def obter_slots_livres(data_iso: str, duracao: int):
+    try:
+        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
+        dia_semana = data_obj.weekday()
+        expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+
+        if not expediente.data or not expediente.data[0].get('aberto', False):
+            return []
+
+        str_ab = str(expediente.data[0].get('hora_abertura', '09:00'))[:5]
+        str_fe = str(expediente.data[0].get('hora_fechamento', '18:00'))[:5]
+        hr_abertura = datetime.strptime(str_ab, "%H:%M")
+        hr_fechamento = datetime.strptime(str_fe, "%H:%M")
+
+        marcacoes = supabase.table("marcacoes").select("hora", "servico").eq("data", data_iso).neq("status", "Cancelada").execute()
+
+        ocupados = []
+        for m in marcacoes.data:
+            inicio = datetime.strptime(m['hora'], "%H:%M")
+            d_serv = obter_duracao_servico(m['servico'])
+            fim = inicio + timedelta(minutes=d_serv)
+            ocupados.append((inicio, fim))
+
+        slots = []
+        atual = hr_abertura
+        while atual + timedelta(minutes=duracao) <= hr_fechamento:
+            fim_slot = atual + timedelta(minutes=duracao)
+            conflito = False
+            for (o_ini, o_fim) in ocupados:
+                if atual < o_fim and fim_slot > o_ini:
+                    conflito = True
+                    break
+            if not conflito:
+                slots.append(atual.strftime("%H:%M"))
+            atual += timedelta(minutes=30)
+            
+        return slots
+    except Exception:
+        return []
+
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     try:
         resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
@@ -175,8 +214,7 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
         if hora_inicio.time() < hr_abertura or hora_fim.time() > hr_fechamento:
             return f"Nosso horário neste dia é das {str_abertura} às {str_fechamento}. Lembrando que o serviço leva {duracao} minutos!"
             
-    except Exception as e:
-        print(f"Erro detalhado no expediente: {e}")
+    except Exception:
         return "Tive um problema ao verificar os horários. Tente novamente."
 
     disponivel, horario_final = verificar_vaga_e_sugerir(data_iso, hora)
