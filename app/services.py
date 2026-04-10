@@ -69,7 +69,8 @@ def processar_texto_com_ia(texto_cliente: str):
             texto_limpo = texto_limpo.split("```")[1].split("```")[0].strip()
             
         return json.loads(texto_limpo)
-    except Exception:
+    except Exception as e:
+        print("ERRO DETALHADO DA IA:", e)
         return {"data": None, "hora": None, "servico": None}
 
 def limpar_mensagem(mensagem: str):
@@ -142,25 +143,40 @@ def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
 def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor: float):
     duracao = obter_duracao_servico(servico)
     formato_hora = "%H:%M"
-    hora_inicio = datetime.strptime(hora, formato_hora)
-    hora_fim = hora_inicio + timedelta(minutes=duracao)
+    
+    try:
+        hora_inicio = datetime.strptime(hora, formato_hora)
+        hora_fim = hora_inicio + timedelta(minutes=duracao)
+    except Exception:
+        return "Horário com formato inválido."
 
     try:
-        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
+        if "/" in data_iso:
+            try:
+                data_obj = datetime.strptime(data_iso, "%d/%m/%Y")
+            except Exception:
+                data_obj = datetime.strptime(data_iso, "%Y/%m/%d")
+        else:
+            data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
+            
         dia_semana = data_obj.weekday()
         
         expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
         
-        if not expediente.data or not expediente.data[0]['aberto']:
+        if not expediente.data or not expediente.data[0].get('aberto', False):
             return "Desculpe, a barbearia está fechada neste dia."
             
-        hr_abertura = datetime.strptime(expediente.data[0]['hora_abertura'], "%H:%M:%S").time()
-        hr_fechamento = datetime.strptime(expediente.data[0]['hora_fechamento'], "%H:%M:%S").time()
+        str_abertura = str(expediente.data[0].get('hora_abertura', '09:00'))[:5]
+        str_fechamento = str(expediente.data[0].get('hora_fechamento', '18:00'))[:5]
+        
+        hr_abertura = datetime.strptime(str_abertura, "%H:%M").time()
+        hr_fechamento = datetime.strptime(str_fechamento, "%H:%M").time()
         
         if hora_inicio.time() < hr_abertura or hora_fim.time() > hr_fechamento:
-            return f"Nosso horário neste dia é das {hr_abertura.strftime('%H:%M')} às {hr_fechamento.strftime('%H:%M')}. Lembrando que o serviço leva {duracao} minutos!"
+            return f"Nosso horário neste dia é das {str_abertura} às {str_fechamento}. Lembrando que o serviço leva {duracao} minutos!"
             
-    except Exception:
+    except Exception as e:
+        print(f"Erro detalhado no expediente: {e}")
         return "Tive um problema ao verificar os horários. Tente novamente."
 
     disponivel, horario_final = verificar_vaga_e_sugerir(data_iso, hora)
@@ -179,7 +195,7 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
     else:
         if horario_final:
             return f"Puxa, às {hora} já estou ocupado. Que tal às {horario_final}?"
-        return "Horário inválido. Por favor, tente algo como 14:30."
+        return "Horário indisponível."
 
 # ==========================================
 # OPERAÇÕES DE CAIXA E DASHBOARD
