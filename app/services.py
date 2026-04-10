@@ -13,7 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuração Gemini
+# Configuração Gemini - Usando o modelo estável 1.5-flash
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model_ia = genai.GenerativeModel('gemini-1.5-flash')
@@ -40,14 +40,16 @@ def processar_texto_com_ia(texto_cliente: str):
         """
         response = model_ia.generate_content(prompt)
         
-        # Limpeza de Markdown: Remove ```json e ``` para evitar erro no parse
-        texto_resposta = response.text.strip()
-        if texto_resposta.startswith("```"):
-            texto_resposta = texto_resposta.replace("```json", "").replace("```", "").strip()
+        # Limpeza robusta: remove marcações de código markdown e espaços
+        texto_limpo = response.text.strip()
+        if "```json" in texto_limpo:
+            texto_limpo = texto_limpo.split("```json")[1].split("```")[0].strip()
+        elif "```" in texto_limpo:
+            texto_limpo = texto_limpo.split("```")[1].split("```")[0].strip()
             
-        return json.loads(texto_resposta)
+        return json.loads(texto_limpo)
     except Exception as e:
-        print(f"Erro ao processar IA: {e}")
+        print(f"Erro IA: {e}")
         return {"hora": None, "servico": None}
 
 # --- FUNÇÕES DE CONFIGURAÇÃO E CUSTOS ---
@@ -58,17 +60,21 @@ def obter_configuracoes():
         if resposta.data:
             return resposta.data[0]
     except Exception as e:
-        print(f"Erro ao obter configurações: {e}")
+        print(f"Erro configurações: {e}")
     return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
 
 def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
     novo_total = novo_aluguel + novos_produtos
-    supabase.table("configuracoes").update({
-        "custo_aluguel": novo_aluguel,
-        "custo_produtos": novos_produtos,
-        "gastos_fixos": novo_total
-    }).eq("id", 1).execute()
-    return novo_total
+    try:
+        supabase.table("configuracoes").update({
+            "custo_aluguel": novo_aluguel,
+            "custo_produtos": novos_produtos,
+            "gastos_fixos": novo_total
+        }).eq("id", 1).execute()
+        return novo_total
+    except Exception as e:
+        print(f"Erro atualizar custos: {e}")
+        return 0
 
 def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
     try:
@@ -81,25 +87,20 @@ def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
 
 def limpar_mensagem(mensagem: str):
     palavras = mensagem.lower().split()
-    mensagem_limpa = []
-    for palavra in palavras:
-        palavra_corrigida = dicionario_nlp.get(palavra, palavra)
-        mensagem_limpa.append(palavra_corrigida)
+    mensagem_limpa = [dicionario_nlp.get(p, p) for p in palavras]
     return " ".join(mensagem_limpa)
 
 # --- FUNÇÕES DE AGENDAMENTO ---
 
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
-    # Busca marcações que não foram canceladas
-    resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
-    horarios_ocupados = [item["hora"] for item in resposta.data]
-    
-    if hora_desejada not in horarios_ocupados:
-        return True, hora_desejada
-    
-    # Se ocupado, sugere de hora em hora
-    formato = "%H:%M"
     try:
+        resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
+        horarios_ocupados = [item["hora"] for item in resposta.data]
+        
+        if hora_desejada not in horarios_ocupados:
+            return True, hora_desejada
+        
+        formato = "%H:%M"
         hora_obj = datetime.strptime(hora_desejada, formato)
         nova_hora_obj = hora_obj + timedelta(hours=1)
         nova_hora = nova_hora_obj.strftime(formato)
@@ -109,7 +110,7 @@ def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
             nova_hora = nova_hora_obj.strftime(formato)
             
         return False, nova_hora
-    except ValueError:
+    except Exception:
         return False, None
 
 def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: float):
@@ -117,35 +118,36 @@ def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: flo
     
     if disponivel:
         novo_dado = {
-            "cliente": cliente,
-            "servico": servico,
-            "data": data,
-            "hora": hora,
-            "valor": valor,
-            "status": "Pendente"
+            "cliente": cliente, "servico": servico, "data": data,
+            "hora": hora, "valor": valor, "status": "Pendente"
         }
-        supabase.table("marcacoes").insert(novo_dado).execute()
-        return f"Maravilha! O serviço de {servico} para {cliente} foi marcado para {data} às {hora}."
+        try:
+            supabase.table("marcacoes").insert(novo_dado).execute()
+            return f"Maravilha! O serviço de {servico} para {cliente} foi marcado para {data} às {hora}."
+        except Exception as e:
+            return f"Erro ao salvar no banco: {e}"
     else:
         if horario_final:
-            return f"Puxa, às {hora} eu já tenho a agenda cheia. Que tal marcarmos para as {horario_final}?"
-        return "Desculpe, não entendi a hora. Use o formato HH:MM (ex: 10:00)."
+            return f"Puxa, às {hora} já estou ocupado. Que tal às {horario_final}?"
+        return "Horário inválido. Use HH:MM."
 
 # --- FUNÇÕES DE OPERAÇÃO ---
 
 def realizar_checkin(nome_cliente: str):
-    # Busca o ID da marcação pendente mais recente para o cliente
-    resposta = supabase.table("marcacoes")\
-        .select("id")\
-        .ilike("cliente", nome_cliente)\
-        .eq("status", "Pendente")\
-        .order("id", desc=True)\
-        .execute()
-    
-    if resposta.data:
-        id_marcacao = resposta.data[0]["id"]
-        supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_marcacao).execute()
-        return True
+    try:
+        resposta = supabase.table("marcacoes")\
+            .select("id")\
+            .ilike("cliente", nome_cliente)\
+            .eq("status", "Pendente")\
+            .order("id", desc=True)\
+            .execute()
+        
+        if resposta.data:
+            id_marcacao = resposta.data[0]["id"]
+            supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_marcacao).execute()
+            return True
+    except Exception:
+        pass
     return False
 
 # --- DASHBOARD FINANCEIRO ---
@@ -154,24 +156,19 @@ def gerar_dashboard():
     config = obter_configuracoes()
     gastos_fixos = config.get("gastos_fixos", 0)
     
-    # Soma apenas os serviços que já foram concluídos (check-in feito)
-    resposta = supabase.table("marcacoes").select("valor").eq("status", "Concluído").execute()
-    
-    total_ganho = sum(item["valor"] for item in resposta.data)
-    cortes_realizados = len(resposta.data)
-    lucro_liquido = total_ganho - gastos_fixos
-    
-    if lucro_liquido > 500:
-        dica = "Excelente mês! Considere investir em novos equipamentos."
-    elif lucro_liquido >= 0:
-        dica = "Contas pagas, mas a margem está apertada. Tente vender produtos extras."
-    else:
-        dica = "Atenção: O lucro está negativo. Precisamos focar em atrair clientes."
-    
-    return {
-        "cortes_concluidos": cortes_realizados,
-        "faturamento_bruto": total_ganho,
-        "gastos_fixos_da_loja": gastos_fixos,
-        "lucro_liquido_real": lucro_liquido,
-        "o_que_fazer": dica
-    }
+    try:
+        resposta = supabase.table("marcacoes").select("valor").eq("status", "Concluído").execute()
+        total_ganho = sum(item["valor"] for item in resposta.data)
+        lucro = total_ganho - gastos_fixos
+        
+        dica = "Lucro positivo!" if lucro > 0 else "Alerta de prejuízo."
+        
+        return {
+            "cortes_concluidos": len(resposta.data),
+            "faturamento_bruto": total_ganho,
+            "gastos_fixos_da_loja": gastos_fixos,
+            "lucro_liquido_real": lucro,
+            "o_que_fazer": dica
+        }
+    except Exception:
+        return {"erro": "Não foi possível carregar os dados"}
