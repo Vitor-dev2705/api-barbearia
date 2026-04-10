@@ -5,15 +5,15 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
-# Carrega as variáveis de ambiente
+# ==========================================
+# CONFIGURAÇÕES INICIAIS
+# ==========================================
 load_dotenv()
 
-# Configuração Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuração Gemini (NOVA BIBLIOTECA)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -25,36 +25,43 @@ dicionario_nlp = {
     "p/": "para"
 }
 
-# --- FUNÇÕES DE INTELIGÊNCIA ARTIFICIAL ---
-
+# ==========================================
+# PROCESSAMENTO DE LINGUAGEM NATURAL (IA)
+# ==========================================
 def processar_texto_com_ia(texto_cliente: str):
+    hoje = datetime.now()
+    data_hoje_str = hoje.strftime("%Y-%m-%d")
+    dia_semana_hoje = hoje.strftime("%A")
+
     try:
         prompt = f"""
         Você é um assistente de barbearia profissional. 
         O cliente disse: "{texto_cliente}".
         
-        Sua tarefa é extrair o HORÁRIO e o SERVIÇO.
+        INFORMAÇÕES DE CONTEXTO:
+        Hoje é {dia_semana_hoje}, data: {data_hoje_str}.
+        
+        Sua tarefa é extrair a DATA, o HORÁRIO e o SERVIÇO.
+        
+        REGRAS DE DATA:
+        - "hoje": retorne {data_hoje_str}
+        - "amanhã": adicione 1 dia à data de hoje.
+        - "depois de amanhã": adicione 2 dias.
+        - Se for um dia da semana (ex: "quinta"), retorne a data da próxima quinta-feira.
+        - Se não achar data, retorne null.
         
         REGRAS DE HORÁRIO:
-        - Se o cliente disser "13 h", "13h", "às 13" ou "13 horas", converta para "13:00".
-        - Se disser "meio dia", converta para "12:00".
-        - Se disser "uma da tarde", converta para "13:00".
-        - Sempre responda no formato de 24 horas HH:MM.
+        - Converta "13 h", "13h", "às 13" ou "uma da tarde" para "13:00".
+        - Se não achar horário, retorne null.
         
-        REGRAS DE SERVIÇO:
-        - Se não mencionado, assuma 'Corte Simples'.
-        
-        Responda APENAS um JSON plano: {{"hora": "HH:MM", "servico": "nome"}}
-        Se não encontrar horário de jeito nenhum, responda: {{"hora": null, "servico": null}}
+        Responda APENAS um JSON plano: {{"data": "YYYY-MM-DD", "hora": "HH:MM", "servico": "nome"}}
         """
         
-        # NOVA FORMA DE CHAMAR A API DO GEMINI
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt
         )
         
-        # Limpeza de Markdown
         texto_limpo = response.text.strip()
         if "```json" in texto_limpo:
             texto_limpo = texto_limpo.split("```json")[1].split("```")[0].strip()
@@ -62,50 +69,55 @@ def processar_texto_com_ia(texto_cliente: str):
             texto_limpo = texto_limpo.split("```")[1].split("```")[0].strip()
             
         return json.loads(texto_limpo)
-    except Exception as e:
-        print(f"Erro IA: {e}")
-        return {"hora": None, "servico": None}
-
-# --- FUNÇÕES DE CONFIGURAÇÃO E CUSTOS ---
-
-def obter_configuracoes():
-    try:
-        resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
-        if resposta.data:
-            return resposta.data[0]
-    except Exception as e:
-        print(f"Erro configurações: {e}")
-    return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
-
-def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
-    novo_total = novo_aluguel + novos_produtos
-    try:
-        supabase.table("configuracoes").update({
-            "custo_aluguel": novo_aluguel,
-            "custo_produtos": novos_produtos,
-            "gastos_fixos": novo_total
-        }).eq("id", 1).execute()
-        return novo_total
-    except Exception as e:
-        print(f"Erro atualizar custos: {e}")
-        return 0
-
-def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
-    try:
-        resposta = supabase.table("servicos").update({"preco": novo_valor}).ilike("nome", nome_servico).execute()
-        return len(resposta.data) > 0
     except Exception:
-        return False
-
-# --- FUNÇÕES DE TRATAMENTO DE TEXTO ---
+        return {"data": None, "hora": None, "servico": None}
 
 def limpar_mensagem(mensagem: str):
     palavras = mensagem.lower().split()
     mensagem_limpa = [dicionario_nlp.get(p, p) for p in palavras]
     return " ".join(mensagem_limpa)
 
-# --- FUNÇÕES DE AGENDAMENTO ---
+# ==========================================
+# GERENCIAMENTO DE DADOS DA BARBEARIA
+# ==========================================
+def obter_duracao_servico(nome_servico: str):
+    try:
+        resposta = supabase.table("servicos").select("duracao_minutos").ilike("nome", f"%{nome_servico}%").execute()
+        if resposta.data:
+            return resposta.data[0]["duracao_minutos"]
+    except Exception:
+        pass
+    return 30
 
+def obter_configuracoes():
+    try:
+        resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
+        if resposta.data:
+            return resposta.data[0]
+    except Exception:
+        pass
+    return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
+
+def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
+    novo_total = novo_aluguel + novos_produtos
+    try:
+        supabase.table("configuracoes").update({
+            "custo_aluguel": novo_aluguel, "custo_produtos": novos_produtos, "gastos_fixos": novo_total
+        }).eq("id", 1).execute()
+        return novo_total
+    except Exception: 
+        return 0
+
+def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
+    try:
+        resposta = supabase.table("servicos").update({"preco": novo_valor}).ilike("nome", nome_servico).execute()
+        return len(resposta.data) > 0
+    except Exception: 
+        return False
+
+# ==========================================
+# LÓGICA DE AGENDAMENTO E EXPEDIENTE
+# ==========================================
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     try:
         resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
@@ -127,44 +139,62 @@ def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     except Exception:
         return False, None
 
-def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: float):
-    disponivel, horario_final = verificar_vaga_e_sugerir(data, hora)
+def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor: float):
+    duracao = obter_duracao_servico(servico)
+    formato_hora = "%H:%M"
+    hora_inicio = datetime.strptime(hora, formato_hora)
+    hora_fim = hora_inicio + timedelta(minutes=duracao)
+
+    try:
+        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
+        dia_semana = data_obj.weekday()
+        
+        expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+        
+        if not expediente.data or not expediente.data[0]['aberto']:
+            return "Desculpe, a barbearia está fechada neste dia."
+            
+        hr_abertura = datetime.strptime(expediente.data[0]['hora_abertura'], "%H:%M:%S").time()
+        hr_fechamento = datetime.strptime(expediente.data[0]['hora_fechamento'], "%H:%M:%S").time()
+        
+        if hora_inicio.time() < hr_abertura or hora_fim.time() > hr_fechamento:
+            return f"Nosso horário neste dia é das {hr_abertura.strftime('%H:%M')} às {hr_fechamento.strftime('%H:%M')}. Lembrando que o serviço leva {duracao} minutos!"
+            
+    except Exception:
+        return "Tive um problema ao verificar os horários. Tente novamente."
+
+    disponivel, horario_final = verificar_vaga_e_sugerir(data_iso, hora)
     
     if disponivel:
         novo_dado = {
-            "cliente": cliente, "servico": servico, "data": data,
+            "cliente": cliente, "servico": servico, "data": data_iso,
             "hora": hora, "valor": valor, "status": "Pendente"
         }
         try:
             supabase.table("marcacoes").insert(novo_dado).execute()
-            return f"Maravilha! O serviço de {servico} para {cliente} foi marcado para {data} às {hora}."
-        except Exception as e:
-            return f"Erro ao salvar no banco: {e}"
+            data_formatada_br = data_obj.strftime("%d/%m/%Y")
+            return f"Maravilha! Seu {servico} ({duracao} min) foi marcado para {data_formatada_br} às {hora}."
+        except Exception:
+            return "Erro ao salvar no banco."
     else:
         if horario_final:
             return f"Puxa, às {hora} já estou ocupado. Que tal às {horario_final}?"
         return "Horário inválido. Por favor, tente algo como 14:30."
 
-# --- FUNÇÕES DE OPERAÇÃO ---
-
+# ==========================================
+# OPERAÇÕES DE CAIXA E DASHBOARD
+# ==========================================
 def realizar_checkin(nome_cliente: str):
     try:
-        resposta = supabase.table("marcacoes")\
-            .select("id")\
-            .ilike("cliente", nome_cliente)\
-            .eq("status", "Pendente")\
-            .order("id", desc=True)\
-            .execute()
+        resposta = supabase.table("marcacoes").select("id").ilike("cliente", nome_cliente).eq("status", "Pendente").order("id", desc=True).execute()
         
         if resposta.data:
             id_marcacao = resposta.data[0]["id"]
             supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_marcacao).execute()
             return True
-    except Exception:
+    except Exception: 
         pass
     return False
-
-# --- DASHBOARD FINANCEIRO ---
 
 def gerar_dashboard():
     config = obter_configuracoes()
@@ -175,11 +205,11 @@ def gerar_dashboard():
         total_ganho = sum(item["valor"] for item in resposta.data)
         lucro = total_ganho - gastos_fixos
         
-        if lucro > 500:
+        if lucro > 500: 
             dica = "Excelente mês! Considere investir em novos equipamentos."
-        elif lucro >= 0:
+        elif lucro >= 0: 
             dica = "Contas pagas, mas a margem está apertada."
-        else:
+        else: 
             dica = "Atenção: O lucro está negativo."
         
         return {
