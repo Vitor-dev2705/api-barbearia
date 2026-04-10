@@ -13,7 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuração Gemini - Usando o modelo estável 1.5-flash
+# Configuração Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model_ia = genai.GenerativeModel('gemini-1.5-flash')
@@ -30,17 +30,29 @@ dicionario_nlp = {
 
 def processar_texto_com_ia(texto_cliente: str):
     try:
+        # Prompt melhorado para entender "13 h", "13h", "meio dia", etc.
         prompt = f"""
         Você é um assistente de barbearia profissional. 
         O cliente disse: "{texto_cliente}".
-        Extraia o HORÁRIO (no formato HH:MM) e o SERVIÇO.
-        Se o serviço não for mencionado, assuma 'Corte Simples'.
-        Responda APENAS um JSON plano assim: {{"hora": "HH:MM", "servico": "nome"}}
-        Se não encontrar horário, responda: {{"hora": null, "servico": null}}
+        
+        Sua tarefa é extrair o HORÁRIO e o SERVIÇO.
+        
+        REGRAS DE HORÁRIO:
+        - Se o cliente disser "13 h", "13h", "às 13" ou "13 horas", converta para "13:00".
+        - Se disser "meio dia", converta para "12:00".
+        - Se disser "uma da tarde", converta para "13:00".
+        - Sempre responda no formato de 24 horas HH:MM.
+        
+        REGRAS DE SERVIÇO:
+        - Se não mencionado, assuma 'Corte Simples'.
+        
+        Responda APENAS um JSON plano: {{"hora": "HH:MM", "servico": "nome"}}
+        Se não encontrar horário de jeito nenhum, responda: {{"hora": null, "servico": null}}
         """
+        
         response = model_ia.generate_content(prompt)
         
-        # Limpeza robusta: remove marcações de código markdown e espaços
+        # Limpeza de Markdown
         texto_limpo = response.text.strip()
         if "```json" in texto_limpo:
             texto_limpo = texto_limpo.split("```json")[1].split("```")[0].strip()
@@ -94,12 +106,14 @@ def limpar_mensagem(mensagem: str):
 
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     try:
+        # Busca marcações que não foram canceladas
         resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
         horarios_ocupados = [item["hora"] for item in resposta.data]
         
         if hora_desejada not in horarios_ocupados:
             return True, hora_desejada
         
+        # Sugestão de próximo horário
         formato = "%H:%M"
         hora_obj = datetime.strptime(hora_desejada, formato)
         nova_hora_obj = hora_obj + timedelta(hours=1)
@@ -114,6 +128,7 @@ def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
         return False, None
 
 def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: float):
+    # Garante que a hora está no formato HH:MM antes de verificar
     disponivel, horario_final = verificar_vaga_e_sugerir(data, hora)
     
     if disponivel:
@@ -129,7 +144,7 @@ def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: flo
     else:
         if horario_final:
             return f"Puxa, às {hora} já estou ocupado. Que tal às {horario_final}?"
-        return "Horário inválido. Use HH:MM."
+        return "Horário inválido. Por favor, tente algo como 14:30."
 
 # --- FUNÇÕES DE OPERAÇÃO ---
 
@@ -161,7 +176,12 @@ def gerar_dashboard():
         total_ganho = sum(item["valor"] for item in resposta.data)
         lucro = total_ganho - gastos_fixos
         
-        dica = "Lucro positivo!" if lucro > 0 else "Alerta de prejuízo."
+        if lucro > 500:
+            dica = "Excelente mês! Considere investir em novos equipamentos."
+        elif lucro >= 0:
+            dica = "Contas pagas, mas a margem está apertada."
+        else:
+            dica = "Atenção: O lucro está negativo."
         
         return {
             "cortes_concluidos": len(resposta.data),
