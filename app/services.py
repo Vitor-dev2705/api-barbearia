@@ -5,12 +5,15 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
+# Carrega as variáveis de ambiente
 load_dotenv()
 
+# Configuração Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Configuração Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 model_ia = genai.GenerativeModel('gemini-1.5-flash')
@@ -23,6 +26,8 @@ dicionario_nlp = {
     "p/": "para"
 }
 
+# --- FUNÇÕES DE INTELIGÊNCIA ARTIFICIAL ---
+
 def processar_texto_com_ia(texto_cliente: str):
     try:
         prompt = f"""
@@ -34,18 +39,26 @@ def processar_texto_com_ia(texto_cliente: str):
         Se não encontrar horário, responda: {{"hora": null, "servico": null}}
         """
         response = model_ia.generate_content(prompt)
-        resultado = json.loads(response.text.replace("```json", "").replace("```", "").strip())
-        return resultado
-    except Exception:
+        
+        # Limpeza de Markdown: Remove ```json e ``` para evitar erro no parse
+        texto_resposta = response.text.strip()
+        if texto_resposta.startswith("```"):
+            texto_resposta = texto_resposta.replace("```json", "").replace("```", "").strip()
+            
+        return json.loads(texto_resposta)
+    except Exception as e:
+        print(f"Erro ao processar IA: {e}")
         return {"hora": None, "servico": None}
+
+# --- FUNÇÕES DE CONFIGURAÇÃO E CUSTOS ---
 
 def obter_configuracoes():
     try:
         resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
         if resposta.data:
             return resposta.data[0]
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Erro ao obter configurações: {e}")
     return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
 
 def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
@@ -64,6 +77,8 @@ def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
     except Exception:
         return False
 
+# --- FUNÇÕES DE TRATAMENTO DE TEXTO ---
+
 def limpar_mensagem(mensagem: str):
     palavras = mensagem.lower().split()
     mensagem_limpa = []
@@ -72,13 +87,17 @@ def limpar_mensagem(mensagem: str):
         mensagem_limpa.append(palavra_corrigida)
     return " ".join(mensagem_limpa)
 
+# --- FUNÇÕES DE AGENDAMENTO ---
+
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
+    # Busca marcações que não foram canceladas
     resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
     horarios_ocupados = [item["hora"] for item in resposta.data]
     
     if hora_desejada not in horarios_ocupados:
         return True, hora_desejada
     
+    # Se ocupado, sugere de hora em hora
     formato = "%H:%M"
     try:
         hora_obj = datetime.strptime(hora_desejada, formato)
@@ -112,7 +131,10 @@ def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: flo
             return f"Puxa, às {hora} eu já tenho a agenda cheia. Que tal marcarmos para as {horario_final}?"
         return "Desculpe, não entendi a hora. Use o formato HH:MM (ex: 10:00)."
 
+# --- FUNÇÕES DE OPERAÇÃO ---
+
 def realizar_checkin(nome_cliente: str):
+    # Busca o ID da marcação pendente mais recente para o cliente
     resposta = supabase.table("marcacoes")\
         .select("id")\
         .ilike("cliente", nome_cliente)\
@@ -126,10 +148,13 @@ def realizar_checkin(nome_cliente: str):
         return True
     return False
 
+# --- DASHBOARD FINANCEIRO ---
+
 def gerar_dashboard():
     config = obter_configuracoes()
     gastos_fixos = config.get("gastos_fixos", 0)
     
+    # Soma apenas os serviços que já foram concluídos (check-in feito)
     resposta = supabase.table("marcacoes").select("valor").eq("status", "Concluído").execute()
     
     total_ganho = sum(item["valor"] for item in resposta.data)
