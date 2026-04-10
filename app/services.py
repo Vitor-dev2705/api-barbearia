@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
+# Carrega as variáveis de ambiente
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -10,6 +11,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Dicionário para normalizar gírias e abreviações
 dicionario_nlp = {
     "dps": "depois",
     "hj": "hoje",
@@ -18,13 +20,20 @@ dicionario_nlp = {
     "p/": "para"
 }
 
+# --- FUNÇÕES DE CONFIGURAÇÃO E PREÇOS ---
+
 def obter_configuracoes():
-    resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
-    if resposta.data:
-        return resposta.data[0]
+    """Busca as configurações de custos da barbearia."""
+    try:
+        resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
+        if resposta.data:
+            return resposta.data[0]
+    except Exception as e:
+        print(f"Erro ao obter configurações: {e}")
     return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
 
 def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
+    """Atualiza os custos fixos no banco de dados."""
     novo_total = novo_aluguel + novos_produtos
     supabase.table("configuracoes").update({
         "custo_aluguel": novo_aluguel,
@@ -33,6 +42,16 @@ def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
     }).eq("id", 1).execute()
     return novo_total
 
+def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
+    try:
+        resposta = supabase.table("servicos").update({"preco": novo_valor}).ilike("nome", nome_servico).execute()
+        return len(resposta.data) > 0
+    except Exception as e:
+        print(f"Erro ao atualizar preço: {e}")
+        return False
+
+# --- FUNÇÕES DE PROCESSAMENTO DE MENSAGENS ---
+
 def limpar_mensagem(mensagem: str):
     palavras = mensagem.lower().split()
     mensagem_limpa = []
@@ -40,6 +59,8 @@ def limpar_mensagem(mensagem: str):
         palavra_corrigida = dicionario_nlp.get(palavra, palavra)
         mensagem_limpa.append(palavra_corrigida)
     return " ".join(mensagem_limpa)
+
+# --- FUNÇÕES DE AGENDAMENTO ---
 
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
@@ -81,8 +102,15 @@ def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: flo
             return f"Puxa, às {hora} eu já tenho a agenda cheia. Que tal marcarmos para as {horario_final}?"
         return "Desculpe, não entendi a hora. Use o formato HH:MM (ex: 10:00)."
 
+# --- FUNÇÕES DE OPERAÇÃO E DASHBOARD ---
+
 def realizar_checkin(nome_cliente: str):
-    resposta = supabase.table("marcacoes").select("id").ilike("cliente", nome_cliente).eq("status", "Pendente").execute()
+    resposta = supabase.table("marcacoes")\
+        .select("id")\
+        .ilike("cliente", nome_cliente)\
+        .eq("status", "Pendente")\
+        .order("id", desc=True)\
+        .execute()
     
     if resposta.data:
         id_marcacao = resposta.data[0]["id"]
@@ -92,7 +120,7 @@ def realizar_checkin(nome_cliente: str):
 
 def gerar_dashboard():
     config = obter_configuracoes()
-    gastos_fixos = config["gastos_fixos"]
+    gastos_fixos = config.get("gastos_fixos", 0)
     
     resposta = supabase.table("marcacoes").select("valor").eq("status", "Concluído").execute()
     
@@ -115,24 +143,3 @@ def gerar_dashboard():
         "lucro_liquido_real": lucro_liquido,
         "o_que_fazer": dica
     }
-    
-def gerar_dados_pizza():
-    config = obter_configuracoes()
-    
-    resposta = supabase.table("marcacoes").select("valor").eq("status", "Concluído").execute()
-    total_recebido = sum(item["valor"] for item in resposta.data)
-    
-    lucro = max(0, total_recebido - config["gastos_fixos"])
-    
-    dados_grafico = [
-        {"categoria": "Aluguel", "valor": config["custo_aluguel"]},
-        {"categoria": "Produtos/Fixos", "valor": config["custo_produtos"]},
-        {"categoria": "Lucro Líquido", "valor": lucro}
-    ]
-    
-    if lucro > config["gastos_fixos"]:
-        conselho = "O lucro superou os custos! Sugestão: Reserve 20% para fundo de reserva e invista em marketing."
-    else:
-        conselho = "Margem apertada. Tente oferecer serviços casados (Cabelo + Barba) para aumentar o ticket médio."
-        
-    return {"dados": dados_grafico, "conselho": conselho}
