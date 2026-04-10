@@ -1,6 +1,6 @@
 import os
 import json
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from supabase import create_client, Client
@@ -13,10 +13,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Configuração Gemini
+# Configuração Gemini (NOVA BIBLIOTECA)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
-model_ia = genai.GenerativeModel('gemini-1.5-flash')
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 dicionario_nlp = {
     "dps": "depois",
@@ -30,7 +29,6 @@ dicionario_nlp = {
 
 def processar_texto_com_ia(texto_cliente: str):
     try:
-        # Prompt melhorado para entender "13 h", "13h", "meio dia", etc.
         prompt = f"""
         Você é um assistente de barbearia profissional. 
         O cliente disse: "{texto_cliente}".
@@ -50,7 +48,11 @@ def processar_texto_com_ia(texto_cliente: str):
         Se não encontrar horário de jeito nenhum, responda: {{"hora": null, "servico": null}}
         """
         
-        response = model_ia.generate_content(prompt)
+        # NOVA FORMA DE CHAMAR A API DO GEMINI
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
         
         # Limpeza de Markdown
         texto_limpo = response.text.strip()
@@ -106,14 +108,12 @@ def limpar_mensagem(mensagem: str):
 
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     try:
-        # Busca marcações que não foram canceladas
         resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
         horarios_ocupados = [item["hora"] for item in resposta.data]
         
         if hora_desejada not in horarios_ocupados:
             return True, hora_desejada
         
-        # Sugestão de próximo horário
         formato = "%H:%M"
         hora_obj = datetime.strptime(hora_desejada, formato)
         nova_hora_obj = hora_obj + timedelta(hours=1)
@@ -128,7 +128,6 @@ def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
         return False, None
 
 def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: float):
-    # Garante que a hora está no formato HH:MM antes de verificar
     disponivel, horario_final = verificar_vaga_e_sugerir(data, hora)
     
     if disponivel:
