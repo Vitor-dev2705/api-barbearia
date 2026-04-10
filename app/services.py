@@ -84,7 +84,7 @@ def obter_duracao_servico(nome_servico: str):
     try:
         resposta = supabase.table("servicos").select("duracao_minutos").ilike("nome", f"%{nome_servico}%").execute()
         if resposta.data:
-            return resposta.data[0]["duracao_minutos"]
+            return int(resposta.data[0]["duracao_minutos"])
     except Exception:
         pass
     return 30
@@ -120,38 +120,68 @@ def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
 # ==========================================
 def obter_slots_livres(data_iso: str, duracao: int):
     try:
+        duracao = int(duracao) if duracao else 30
         data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
         dia_semana = data_obj.weekday()
-        expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+        
+        try:
+            expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+            dados_exp = expediente.data[0] if expediente.data else None
+        except Exception:
+            dados_exp = None
 
-        if not expediente.data or not expediente.data[0].get('aberto', False):
-            return []
+        if not dados_exp:
+            if dia_semana == 6:
+                return []
+            str_ab = "09:00"
+            str_fe = "18:00"
+        else:
+            if not dados_exp.get('aberto', False):
+                return []
+            str_ab = str(dados_exp.get('hora_abertura', '09:00'))[:5]
+            str_fe = str(dados_exp.get('hora_fechamento', '18:00'))[:5]
 
-        str_ab = str(expediente.data[0].get('hora_abertura', '09:00'))[:5]
-        str_fe = str(expediente.data[0].get('hora_fechamento', '18:00'))[:5]
         hr_abertura = datetime.strptime(str_ab, "%H:%M")
         hr_fechamento = datetime.strptime(str_fe, "%H:%M")
 
-        marcacoes = supabase.table("marcacoes").select("hora", "servico").eq("data", data_iso).neq("status", "Cancelada").execute()
+        try:
+            marcacoes = supabase.table("marcacoes").select("hora", "servico").eq("data", data_iso).neq("status", "Cancelada").execute()
+            lista_marcacoes = marcacoes.data or []
+        except Exception:
+            lista_marcacoes = []
 
         ocupados = []
-        for m in marcacoes.data:
-            inicio = datetime.strptime(m['hora'], "%H:%M")
-            d_serv = obter_duracao_servico(m['servico'])
-            fim = inicio + timedelta(minutes=d_serv)
-            ocupados.append((inicio, fim))
+        for m in lista_marcacoes:
+            try:
+                inicio = datetime.strptime(str(m.get('hora', '00:00'))[:5].strip(), "%H:%M")
+                d_serv = int(obter_duracao_servico(m.get('servico', '')))
+                fim = inicio + timedelta(minutes=d_serv)
+                ocupados.append((inicio, fim))
+            except Exception:
+                continue
 
         slots = []
         atual = hr_abertura
+        
+        fuso_br = datetime.now() - timedelta(hours=3)
+        is_hoje = data_iso == fuso_br.strftime("%Y-%m-%d")
+
         while atual + timedelta(minutes=duracao) <= hr_fechamento:
             fim_slot = atual + timedelta(minutes=duracao)
+            
+            if is_hoje and atual.time() <= fuso_br.time():
+                atual += timedelta(minutes=30)
+                continue
+
             conflito = False
             for (o_ini, o_fim) in ocupados:
                 if atual < o_fim and fim_slot > o_ini:
                     conflito = True
                     break
+            
             if not conflito:
                 slots.append(atual.strftime("%H:%M"))
+            
             atual += timedelta(minutes=30)
             
         return slots
@@ -200,13 +230,22 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
             
         dia_semana = data_obj.weekday()
         
-        expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+        try:
+            expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+            dados_exp = expediente.data[0] if expediente.data else None
+        except Exception:
+            dados_exp = None
         
-        if not expediente.data or not expediente.data[0].get('aberto', False):
-            return "Desculpe, a barbearia está fechada neste dia."
-            
-        str_abertura = str(expediente.data[0].get('hora_abertura', '09:00'))[:5]
-        str_fechamento = str(expediente.data[0].get('hora_fechamento', '18:00'))[:5]
+        if dados_exp:
+            if not dados_exp.get('aberto', False):
+                return "Desculpe, a barbearia está fechada neste dia."
+            str_abertura = str(dados_exp.get('hora_abertura', '09:00'))[:5]
+            str_fechamento = str(dados_exp.get('hora_fechamento', '18:00'))[:5]
+        else:
+            if dia_semana == 6:
+                return "Desculpe, a barbearia está fechada neste dia."
+            str_abertura = "09:00"
+            str_fechamento = "18:00"
         
         hr_abertura = datetime.strptime(str_abertura, "%H:%M").time()
         hr_fechamento = datetime.strptime(str_fechamento, "%H:%M").time()
