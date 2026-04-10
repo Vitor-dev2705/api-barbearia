@@ -1,17 +1,20 @@
 import os
+import json
+import google.generativeai as genai
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
-# Carrega as variáveis de ambiente
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY") 
-
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Dicionário para normalizar gírias e abreviações
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+model_ia = genai.GenerativeModel('gemini-1.5-flash')
+
 dicionario_nlp = {
     "dps": "depois",
     "hj": "hoje",
@@ -20,20 +23,32 @@ dicionario_nlp = {
     "p/": "para"
 }
 
-# --- FUNÇÕES DE CONFIGURAÇÃO E PREÇOS ---
+def processar_texto_com_ia(texto_cliente: str):
+    try:
+        prompt = f"""
+        Você é um assistente de barbearia profissional. 
+        O cliente disse: "{texto_cliente}".
+        Extraia o HORÁRIO (no formato HH:MM) e o SERVIÇO.
+        Se o serviço não for mencionado, assuma 'Corte Simples'.
+        Responda APENAS um JSON plano assim: {{"hora": "HH:MM", "servico": "nome"}}
+        Se não encontrar horário, responda: {{"hora": null, "servico": null}}
+        """
+        response = model_ia.generate_content(prompt)
+        resultado = json.loads(response.text.replace("```json", "").replace("```", "").strip())
+        return resultado
+    except Exception:
+        return {"hora": None, "servico": None}
 
 def obter_configuracoes():
-    """Busca as configurações de custos da barbearia."""
     try:
         resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
         if resposta.data:
             return resposta.data[0]
-    except Exception as e:
-        print(f"Erro ao obter configurações: {e}")
+    except Exception:
+        pass
     return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
 
 def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
-    """Atualiza os custos fixos no banco de dados."""
     novo_total = novo_aluguel + novos_produtos
     supabase.table("configuracoes").update({
         "custo_aluguel": novo_aluguel,
@@ -46,11 +61,8 @@ def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
     try:
         resposta = supabase.table("servicos").update({"preco": novo_valor}).ilike("nome", nome_servico).execute()
         return len(resposta.data) > 0
-    except Exception as e:
-        print(f"Erro ao atualizar preço: {e}")
+    except Exception:
         return False
-
-# --- FUNÇÕES DE PROCESSAMENTO DE MENSAGENS ---
 
 def limpar_mensagem(mensagem: str):
     palavras = mensagem.lower().split()
@@ -60,14 +72,12 @@ def limpar_mensagem(mensagem: str):
         mensagem_limpa.append(palavra_corrigida)
     return " ".join(mensagem_limpa)
 
-# --- FUNÇÕES DE AGENDAMENTO ---
-
 def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
     resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
     horarios_ocupados = [item["hora"] for item in resposta.data]
     
     if hora_desejada not in horarios_ocupados:
-        return True, hora_desejada 
+        return True, hora_desejada
     
     formato = "%H:%M"
     try:
@@ -102,8 +112,6 @@ def agendar_servico(cliente: str, servico: str, data: str, hora: str, valor: flo
             return f"Puxa, às {hora} eu já tenho a agenda cheia. Que tal marcarmos para as {horario_final}?"
         return "Desculpe, não entendi a hora. Use o formato HH:MM (ex: 10:00)."
 
-# --- FUNÇÕES DE OPERAÇÃO E DASHBOARD ---
-
 def realizar_checkin(nome_cliente: str):
     resposta = supabase.table("marcacoes")\
         .select("id")\
@@ -126,7 +134,6 @@ def gerar_dashboard():
     
     total_ganho = sum(item["valor"] for item in resposta.data)
     cortes_realizados = len(resposta.data)
-            
     lucro_liquido = total_ganho - gastos_fixos
     
     if lucro_liquido > 500:
