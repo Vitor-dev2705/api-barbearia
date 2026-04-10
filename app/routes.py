@@ -1,26 +1,55 @@
-# app/routes.py
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse # <- Adicionei isto para podermos mostrar uma página web
+import os
+import requests
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from app.services import limpar_mensagem, agendar_servico, realizar_checkin, gerar_dashboard
+from app.services import limpar_mensagem, agendar_servico, realizar_checkin, gerar_dashboard, atualizar_custos_da_loja
 
 router = APIRouter()
 
-class RequisicaoWhatsApp(BaseModel):
-    cliente: str
-    texto_cru: str
-    servico: str
-    data: str
-    hora_desejada: str
-    valor: float
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-@router.post("/whatsapp/receber")
-def bot_recebe_mensagem(dados: RequisicaoWhatsApp):
-    mensagem_processada = limpar_mensagem(dados.texto_cru)
-    print(f"Log interno -> Traduzido para: '{mensagem_processada}'")
+class NovosCustos(BaseModel):
+    aluguel: float
+    produtos: float
+
+def enviar_mensagem_telegram(chat_id: int, texto: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": texto}
+    requests.post(url, json=payload)
+
+@router.post("/telegram/receber")
+async def bot_recebe_mensagem(request: Request):
+    try:
+        dados = await request.json()
+        
+        chat_id = dados["message"]["chat"]["id"]
+        texto_cru = dados["message"].get("text", "")
+        nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
+        
+        mensagem_processada = limpar_mensagem(texto_cru)
+        
+        palavras = mensagem_processada.split()
+        hora_detectada = "10:00"
+        for p in palavras:
+            if ":" in p:
+                hora_detectada = p
+                
+        resposta_do_sistema = agendar_servico(
+            cliente=nome_cliente, 
+            servico="Corte Simples",
+            data="hoje", 
+            hora=hora_detectada, 
+            valor=35.00
+        )
+        
+        enviar_mensagem_telegram(chat_id, resposta_do_sistema)
+        
+        return {"status": "ok"}
     
-    resposta = agendar_servico(dados.cliente, dados.servico, dados.data, dados.hora_desejada, dados.valor)
-    return {"resposta_para_enviar": resposta}
+    except Exception as e:
+        print(f"Erro ao processar Telegram: {e}")
+        return {"status": "erro"}
 
 @router.put("/checkin/{cliente}")
 def fazer_checkin_cliente(cliente: str):
@@ -29,18 +58,17 @@ def fazer_checkin_cliente(cliente: str):
         return {"mensagem": f"Check-in do {cliente} efetuado!"}
     return {"erro": f"Não encontrei marcação pendente para {cliente}."}
 
+@router.put("/configuracoes")
+def mudar_custos_da_barbearia(dados: NovosCustos):
+    novo_total = atualizar_custos_da_loja(dados.aluguel, dados.produtos)
+    return {"mensagem": f"Sucesso! Os novos gastos fixos agora são R$ {novo_total}"}
+
 @router.get("/dashboard")
 def consultar_dashboard():
     return gerar_dashboard()
 
-# --- NOVO CÓDIGO: O VISUAL DO DASHBOARD ---
-
 @router.get("/painel", response_class=HTMLResponse)
 def ver_painel_grafico():
-    """Esta rota cria uma página HTML completa com um gráfico de pizza que o barbeiro pode aceder."""
-    
-    # Eu criei esta página HTML com Javascript (Chart.js) embutido.
-    # Ela vai ligar-se sozinha à nossa rota '/dashboard', pegar nos números e desenhar a pizza!
     codigo_html = """
     <!DOCTYPE html>
     <html lang="pt">
@@ -50,7 +78,7 @@ def ver_painel_grafico():
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
             body { font-family: Arial, sans-serif; text-align: center; background-color: #f4f4f9; }
-            .container { width: 50%; margin: auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0px 0px 10px rgba(0,0,0,0.1); mt-5}
+            .container { width: 50%; margin: auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0px 0px 10px rgba(0,0,0,0.1); margin-top: 50px;}
             h1 { color: #333; }
             .conselho { background-color: #e3f2fd; padding: 15px; border-radius: 5px; color: #0d47a1; font-weight: bold; margin-top: 20px;}
         </style>
@@ -58,24 +86,16 @@ def ver_painel_grafico():
     <body>
         <div class="container">
             <h1>Dashboard Financeiro ✂️</h1>
-            
             <canvas id="graficoPizza"></canvas>
-            
             <div class="conselho" id="textoConselho">A carregar conselho financeiro...</div>
         </div>
 
         <script>
-            // Aqui eu faço o navegador ir buscar os dados à nossa própria API
-            fetch('http://127.0.0.1:8000/dashboard')
+            fetch('/dashboard')
                 .then(resposta => resposta.json())
                 .then(dados => {
-                    // Preencho o conselho na tela
                     document.getElementById('textoConselho').innerText = "Conselho da IA: " + dados.o_que_fazer;
-
-                    // Preparo os dados para o gráfico
                     const valores = [dados.faturamento_bruto, dados.gastos_fixos_da_loja, dados.lucro_liquido_real];
-                    
-                    // Desenho o gráfico de pizza
                     const ctx = document.getElementById('graficoPizza').getContext('2d');
                     new Chart(ctx, {
                         type: 'pie',
@@ -83,7 +103,7 @@ def ver_painel_grafico():
                             labels: ['Faturamento Bruto', 'Gastos Fixos', 'Lucro Líquido'],
                             datasets: [{
                                 data: valores,
-                                backgroundColor: ['#4caf50', '#f44336', '#2196f3'], // Cores: Verde, Vermelho, Azul
+                                backgroundColor: ['#4caf50', '#f44336', '#2196f3'],
                                 hoverOffset: 4
                             }]
                         }
