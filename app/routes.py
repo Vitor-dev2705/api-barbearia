@@ -1,5 +1,6 @@
 import os
 import requests
+import re
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -50,14 +51,24 @@ async def bot_recebe_mensagem(request: Request):
             enviar_mensagem_telegram(chat_id, f"Olá {nome_cliente}! ✂️ Sou o assistente da Barbearia. O que deseja agendar e para qual horário?")
             return {"status": "ok"}
 
+        # --- TENTATIVA 1: INTELIGÊNCIA ARTIFICIAL ---
         resultado_ia = processar_texto_com_ia(texto_cru)
         hora = resultado_ia.get("hora")
         servico = resultado_ia.get("servico") or "Corte Simples"
 
+        # --- TENTATIVA 2: PLANO B (LÓGICA MANUAL) ---
+        # Se a IA falhar ou não achar hora, buscamos o padrão HH:MM no texto manualmente
         if not hora:
-            enviar_mensagem_telegram(chat_id, "Ainda não consegui entender o horário. Pode me dizer algo como: 'Quero cortar o cabelo às 15:30'?")
+            padrao_hora = re.search(r'(\d{1,2}:\d{2})', texto_cru)
+            if padrao_hora:
+                hora = padrao_hora.group(1)
+
+        # --- RESPOSTA DE ERRO SE AMBOS FALHAREM ---
+        if not hora:
+            enviar_mensagem_telegram(chat_id, f"Poxa {nome_cliente}, não consegui entender o horário. Pode enviar no formato 14:30?")
             return {"status": "ok"}
                 
+        # Realiza o agendamento
         resposta_sistema = agendar_servico(
             cliente=nome_cliente, 
             servico=servico,
@@ -68,7 +79,8 @@ async def bot_recebe_mensagem(request: Request):
         
         enviar_mensagem_telegram(chat_id, resposta_sistema)
         return {"status": "ok"}
-    except Exception:
+    except Exception as e:
+        print(f"Erro no webhook: {e}")
         return {"status": "erro"}
 
 @router.put("/checkin/{cliente}")
