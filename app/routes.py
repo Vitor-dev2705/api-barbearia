@@ -42,7 +42,7 @@ async def bot_recebe_mensagem(request: Request):
         
         texto_limpo = limpar_mensagem(texto_cru)
         
-        # Saudações
+        # --- SAUDAÇÕES ---
         if texto_limpo in ["ola", "olá", "oi", "bom dia", "boa tarde", "boa noite"]:
             enviar_mensagem_telegram(chat_id, f"Olá {nome_cliente}! ✂️ Sou o assistente da Barbearia. O que deseja agendar e para qual horário?")
             return {"status": "ok"}
@@ -55,21 +55,25 @@ async def bot_recebe_mensagem(request: Request):
             resultado_ia = processar_texto_com_ia(texto_cru)
             if resultado_ia and isinstance(resultado_ia, dict):
                 res_hora = resultado_ia.get("hora")
+                # Verifica se a IA retornou um horário válido e não a string "null"
                 if res_hora and str(res_hora).lower() != "null":
                     hora = res_hora
                     servico = resultado_ia.get("servico") or "Corte Simples"
         except Exception as e:
             print(f"Erro na IA: {e}")
 
-        # --- 2. PLANO B: REGEX REFORÇADO (Se a IA falhar ou não achar hora) ---
+        # --- 2. PLANO B: REGEX REFORÇADO (Para "13:00", "13h", "13 h") ---
         if not hora:
-            busca = re.search(r'(\d{1,2}:\d{2})', texto_cru)
+            # Esta regex busca números seguidos de : ou h, aceitando espaços
+            busca = re.search(r'(\d{1,2})\s*[:hH]\s*(\d{2})?', texto_cru)
             if busca:
-                hora = busca.group(1)
+                h = busca.group(1).zfill(2)
+                m = busca.group(2) if busca.group(2) else "00"
+                hora = f"{h}:{m}"
 
-        # --- 3. RESPOSTA DE ERRO ---
+        # --- 3. RESPOSTA DE ERRO (Se nada acima funcionar) ---
         if not hora:
-            enviar_mensagem_telegram(chat_id, f"Não entendi o horário, {nome_cliente}. Use o formato 14:30 (exemplo: 'corte as 14:30')")
+            enviar_mensagem_telegram(chat_id, f"Poxa {nome_cliente}, não consegui entender o horário. Pode enviar no formato 14:30 ou 14h?")
             return {"status": "ok"}
                 
         # --- 4. AGENDAMENTO NO BANCO ---
@@ -85,10 +89,22 @@ async def bot_recebe_mensagem(request: Request):
 def ver_painel_grafico():
     return """
     <html>
-        <head><title>Painel Barbearia</title></head>
+        <head>
+            <meta charset="UTF-8">
+            <title>Painel Barbearia</title>
+            <style>
+                body { font-family: sans-serif; text-align: center; padding: 50px; background: #f4f4f9; }
+                .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block; }
+                h1 { color: #333; }
+            </style>
+        </head>
         <body>
-            <h1>Painel do Barbeiro Ativo</h1>
-            <p>Consulte o console para logs de agendamento.</p>
+            <div class="card">
+                <h1>Painel do Barbeiro Ativo ✂️</h1>
+                <p>O sistema está monitorando o Telegram e o Banco de Dados.</p>
+                <hr>
+                <p>Consulte os logs no Render para detalhes técnicos.</p>
+            </div>
         </body>
     </html>
     """
