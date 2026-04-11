@@ -57,7 +57,6 @@ async def bot_recebe_mensagem(request: Request):
     try:
         dados = await request.json()
 
-        # FLUXO 1: INTERAÇÃO COM BOTÕES (CALLBACK QUERY)
         if "callback_query" in dados:
             query = dados["callback_query"]
             chat_id = query["message"]["chat"]["id"]
@@ -67,7 +66,7 @@ async def bot_recebe_mensagem(request: Request):
             if dados_clique.startswith("S|"):
                 servico = dados_clique.split("|")[1]
                 botoes_dias = []
-                hoje = datetime.now()
+                hoje = datetime.utcnow() - timedelta(hours=3)
                 for i in range(5):
                     data_calc = hoje + timedelta(days=i)
                     data_iso = data_calc.strftime("%Y-%m-%d")
@@ -105,7 +104,6 @@ async def bot_recebe_mensagem(request: Request):
 
             return {"status": "ok"}
 
-        # FLUXO 2: MENSAGEM DE TEXTO COMUM
         if "message" not in dados:
             return {"status": "ignorado"}
             
@@ -114,17 +112,18 @@ async def bot_recebe_mensagem(request: Request):
         nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
         texto_limpo = limpar_mensagem(texto_cru)
         
+        botoes_servicos = [
+            [{"text": "✂️ Corte Simples", "callback_data": "S|Corte Simples"}],
+            [{"text": "🧔 Barba", "callback_data": "S|Barba"}],
+            [{"text": "✂️+🧔 Corte e Barba", "callback_data": "S|Corte e Barba"}]
+        ]
+
         if texto_limpo in ["ola", "olá", "oi", "bom dia", "boa tarde", "boa noite", "menu"]:
-            botoes_servicos = [
-                [{"text": "✂️ Corte Simples", "callback_data": "S|Corte Simples"}],
-                [{"text": "🧔 Barba", "callback_data": "S|Barba"}],
-                [{"text": "✂️+🧔 Corte e Barba", "callback_data": "S|Corte e Barba"}]
-            ]
             enviar_mensagem_com_botoes(chat_id, f"Olá {nome_cliente}! Qual serviço você deseja?", botoes_servicos)
             return {"status": "ok"}
 
         hora = None
-        data_agendamento = datetime.now().strftime("%Y-%m-%d")
+        data_agendamento = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
         servico = "Corte Simples"
         
         try:
@@ -150,7 +149,7 @@ async def bot_recebe_mensagem(request: Request):
                 hora = f"{h}:{m}"
 
         if not hora:
-            enviar_mensagem_telegram(chat_id, f"Não entendi, {nome_cliente}. Digite 'Oi' para ver o menu de botões ou mande o horário desejado (ex: 14:30).")
+            enviar_mensagem_com_botoes(chat_id, f"Para agendar, escolha um dos serviços abaixo, {nome_cliente}:", botoes_servicos)
             return {"status": "ok"}
                 
         resposta = agendar_servico(nome_cliente, servico, data_agendamento, hora, 35.0)

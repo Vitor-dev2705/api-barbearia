@@ -29,7 +29,7 @@ dicionario_nlp = {
 # PROCESSAMENTO DE LINGUAGEM NATURAL (IA)
 # ==========================================
 def processar_texto_com_ia(texto_cliente: str):
-    hoje = datetime.now()
+    hoje = datetime.utcnow() - timedelta(hours=3)
     data_hoje_str = hoje.strftime("%Y-%m-%d")
     dia_semana_hoje = hoje.strftime("%A")
 
@@ -163,7 +163,7 @@ def obter_slots_livres(data_iso: str, duracao: int):
         slots = []
         atual = hr_abertura
         
-        fuso_br = datetime.now() - timedelta(hours=3)
+        fuso_br = datetime.utcnow() - timedelta(hours=3)
         is_hoje = data_iso == fuso_br.strftime("%Y-%m-%d")
 
         while atual + timedelta(minutes=duracao) <= hr_fechamento:
