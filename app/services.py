@@ -229,6 +229,11 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
             data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
             
         dia_semana = data_obj.weekday()
+        fuso_br = datetime.utcnow() - timedelta(hours=3)
+        is_hoje = data_obj.strftime("%Y-%m-%d") == fuso_br.strftime("%Y-%m-%d")
+
+        if is_hoje and hora_inicio.time() <= fuso_br.time():
+            return "Esse horário já passou. Por favor, escolha um horário futuro!"
         
         try:
             expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
@@ -273,6 +278,27 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
         if horario_final:
             return f"Puxa, às {hora} já estou ocupado. Que tal às {horario_final}?"
         return "Horário indisponível."
+
+# ==========================================
+# PAINEL DO BARBEIRO (ADMINISTRAÇÃO VIA API)
+# ==========================================
+def obter_expediente_completo():
+    try:
+        resposta = supabase.table("expediente").select("*").order("dia_semana").execute()
+        return resposta.data if resposta.data else []
+    except Exception:
+        return []
+
+def alternar_dia_expediente(dia_semana: int):
+    try:
+        atual = supabase.table("expediente").select("aberto").eq("dia_semana", dia_semana).execute()
+        if atual.data:
+            novo_status = not atual.data[0]["aberto"]
+            supabase.table("expediente").update({"aberto": novo_status}).eq("dia_semana", dia_semana).execute()
+            return novo_status
+    except Exception:
+        pass
+    return False
 
 # ==========================================
 # OPERAÇÕES DE CAIXA E DASHBOARD

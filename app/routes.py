@@ -9,7 +9,8 @@ from app.services import (
     limpar_mensagem, agendar_servico, realizar_checkin, 
     gerar_dashboard, atualizar_custos_da_loja,
     atualizar_preco_servico_db, processar_texto_com_ia,
-    obter_duracao_servico, obter_slots_livres
+    obter_duracao_servico, obter_slots_livres,
+    obter_expediente_completo, alternar_dia_expediente
 )
 
 # ==========================================
@@ -49,6 +50,19 @@ def enviar_mensagem_com_botoes(chat_id: int, texto: str, botoes: list):
     except Exception:
         pass
 
+def editar_mensagem_com_botoes(chat_id: int, message_id: int, texto: str, botoes: list):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": texto,
+        "reply_markup": {"inline_keyboard": botoes}
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
+
 # ==========================================
 # WEBHOOK PRINCIPAL (RECEPÇÃO DE MENSAGENS)
 # ==========================================
@@ -60,22 +74,59 @@ async def bot_recebe_mensagem(request: Request):
         if "callback_query" in dados:
             query = dados["callback_query"]
             chat_id = query["message"]["chat"]["id"]
+            message_id = query["message"]["message_id"]
             dados_clique = query["data"]
             nome_cliente = query["from"]["first_name"]
 
-            if dados_clique.startswith("S|"):
+            if dados_clique.startswith("ADM|TOGGLE|"):
+                dia_idx = int(dados_clique.split("|")[2])
+                alternar_dia_expediente(dia_idx)
+                
+                expediente = obter_expediente_completo()
+                botoes_admin = []
+                nomes_dias = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+                
+                for dia in expediente:
+                    idx = dia["dia_semana"]
+                    status = "✅ Aberto" if dia["aberto"] else "❌ Fechado"
+                    texto = f"{nomes_dias[idx]}: {status}"
+                    botoes_admin.append([{"text": texto, "callback_data": f"ADM|TOGGLE|{idx}"}])
+                
+                editar_mensagem_com_botoes(chat_id, message_id, "🛠️ **Painel de Controle da Agenda**\nClique em um dia para Abrir/Fechar a barbearia:", botoes_admin)
+
+            elif dados_clique.startswith("S|"):
                 servico = dados_clique.split("|")[1]
+                duracao = obter_duracao_servico(servico)
+                
                 botoes_dias = []
                 hoje = datetime.utcnow() - timedelta(hours=3)
-                for i in range(5):
-                    data_calc = hoje + timedelta(days=i)
-                    data_iso = data_calc.strftime("%Y-%m-%d")
-                    texto_botao = data_calc.strftime("%d/%m")
-                    if i == 0: texto_botao = f"Hoje ({texto_botao})"
-                    elif i == 1: texto_botao = f"Amanhã ({texto_botao})"
-                    botoes_dias.append([{"text": texto_botao, "callback_data": f"D|{servico}|{data_iso}"}])
                 
-                enviar_mensagem_com_botoes(chat_id, f"📅 Para qual dia você quer o {servico}?", botoes_dias)
+                dias_adicionados = 0
+                deslocamento = 0
+                
+                while dias_adicionados < 5:
+                    data_calc = hoje + timedelta(days=deslocamento)
+                    data_iso = data_calc.strftime("%Y-%m-%d")
+                    slots = obter_slots_livres(data_iso, duracao)
+                    
+                    if slots:
+                        texto_botao = data_calc.strftime("%d/%m")
+                        if data_iso == hoje.strftime("%Y-%m-%d"): 
+                            texto_botao = f"Hoje ({texto_botao})"
+                        elif data_iso == (hoje + timedelta(days=1)).strftime("%Y-%m-%d"): 
+                            texto_botao = f"Amanhã ({texto_botao})"
+                            
+                        botoes_dias.append([{"text": texto_botao, "callback_data": f"D|{servico}|{data_iso}"}])
+                        dias_adicionados += 1
+                    
+                    deslocamento += 1
+                    if deslocamento > 30:
+                        break
+                
+                if not botoes_dias:
+                    enviar_mensagem_telegram(chat_id, "Puxa, parece que a barbearia está fechada ou lotada nas próximas semanas!")
+                else:
+                    enviar_mensagem_com_botoes(chat_id, f"📅 Para qual dia você quer o {servico}?", botoes_dias)
 
             elif dados_clique.startswith("D|"):
                 _, servico, data_iso = dados_clique.split("|")
@@ -83,7 +134,7 @@ async def bot_recebe_mensagem(request: Request):
                 horarios_livres = obter_slots_livres(data_iso, duracao)
                 
                 if not horarios_livres:
-                    enviar_mensagem_telegram(chat_id, "Puxa, estamos lotados ou fechados neste dia. Escolha outra data!")
+                    enviar_mensagem_telegram(chat_id, "Puxa, os horários esgotaram. Escolha outra data!")
                 else:
                     botoes_horas = []
                     linha = []
@@ -112,6 +163,21 @@ async def bot_recebe_mensagem(request: Request):
         nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
         texto_limpo = limpar_mensagem(texto_cru)
         
+        # MODO ADMINISTRADOR VIA COMANDO SECRETO
+        if texto_limpo in ["admin", "painel", "gerenciar"]:
+            expediente = obter_expediente_completo()
+            botoes_admin = []
+            nomes_dias = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+            
+            for dia in expediente:
+                idx = dia["dia_semana"]
+                status = "✅ Aberto" if dia["aberto"] else "❌ Fechado"
+                texto = f"{nomes_dias[idx]}: {status}"
+                botoes_admin.append([{"text": texto, "callback_data": f"ADM|TOGGLE|{idx}"}])
+                
+            enviar_mensagem_com_botoes(chat_id, "🛠️ **Painel de Controle da Agenda**\nClique em um dia para Abrir/Fechar a barbearia:", botoes_admin)
+            return {"status": "ok"}
+
         botoes_servicos = [
             [{"text": "✂️ Corte Simples", "callback_data": "S|Corte Simples"}],
             [{"text": "🧔 Barba", "callback_data": "S|Barba"}],
