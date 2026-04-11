@@ -68,23 +68,8 @@ def processar_texto_com_ia(texto_cliente: str):
         prompt = f"""
         Você é um assistente de barbearia profissional. 
         O cliente disse: "{texto_cliente}".
-        
-        INFORMAÇÕES DE CONTEXTO:
         Hoje é {dia_semana_hoje}, data: {data_hoje_str}.
-        
         Sua tarefa é extrair a DATA, o HORÁRIO e o SERVIÇO.
-        
-        REGRAS DE DATA:
-        - "hoje": retorne {data_hoje_str}
-        - "amanhã": adicione 1 dia à data de hoje.
-        - "depois de amanhã": adicione 2 dias.
-        - Se for um dia da semana (ex: "quinta"), retorne a data da próxima quinta-feira.
-        - Se não achar data, retorne null.
-        
-        REGRAS DE HORÁRIO:
-        - Converta "13 h", "13h", "às 13" ou "uma da tarde" para "13:00".
-        - Se não achar horário, retorne null.
-        
         Responda APENAS um JSON plano: {{"data": "DD-MM-YYYY", "hora": "HH:MM", "servico": "nome"}}
         """
         
@@ -104,7 +89,7 @@ def processar_texto_com_ia(texto_cliente: str):
         return {"data": None, "hora": None, "servico": None}
 
 def limpar_mensagem(mensagem: str):
-    palavras = mensagem.lower().split()
+    palavras = message.lower().split()
     mensagem_limpa = [dicionario_nlp.get(p, p) for p in palavras]
     return " ".join(mensagem_limpa)
 
@@ -221,41 +206,8 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
     try:
         hora_inicio = datetime.strptime(hora, formato_hora)
         hora_fim = hora_inicio + timedelta(minutes=duracao)
+        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
     except Exception: return "Horário com formato inválido."
-
-    try:
-        if "/" in data_iso:
-            try: data_obj = datetime.strptime(data_iso, "%d/%m/%Y")
-            except Exception: data_obj = datetime.strptime(data_iso, "%Y/%m/%d")
-        else: data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
-            
-        dia_semana = data_obj.weekday()
-        fuso_br = datetime.utcnow() - timedelta(hours=3)
-        is_hoje = data_obj.strftime("%Y-%m-%d") == fuso_br.strftime("%Y-%m-%d")
-
-        if is_hoje and hora_inicio.time() <= fuso_br.time():
-            return "Esse horário já passou. Por favor, escolha um horário futuro!"
-        
-        try:
-            expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
-            dados_exp = expediente.data[0] if expediente.data else None
-        except Exception: dados_exp = None
-        
-        if dados_exp:
-            if not dados_exp.get('aberto', False): return "Desculpe, a barbearia está fechada neste dia."
-            str_abertura = str(dados_exp.get('hora_abertura', '09:00'))[:5]
-            str_fechamento = str(dados_exp.get('hora_fechamento', '18:00'))[:5]
-        else:
-            if dia_semana == 6: return "Desculpe, a barbearia está fechada neste dia."
-            str_abertura, str_fechamento = "09:00", "18:00"
-        
-        hr_abertura = datetime.strptime(str_abertura, "%H:%M").time()
-        hr_fechamento = datetime.strptime(str_fechamento, "%H:%M").time()
-        
-        if hora_inicio.time() < hr_abertura or hora_fim.time() > hr_fechamento:
-            return f"Nosso horário neste dia é das {str_abertura} às {str_fechamento}. Lembrando que o serviço leva {duracao} minutos!"
-            
-    except Exception: return "Tive um problema ao verificar os horários. Tente novamente."
 
     disponivel, horario_final = verificar_vaga_e_sugerir(data_iso, hora)
     
@@ -286,11 +238,11 @@ def obter_grade_horarios_admin(data_iso: str):
         for m in marcacoes.data:
             hora_str = str(m['hora'])[:5]
             if m['status'] == "Bloqueado":
-                mapa_ocupados[hora_str] = "bloqueado"
+                mapa_ocupados[hora_str] = "bloqueado"  # Emoji ❌
             elif m['status'] == "Concluído":
-                mapa_ocupados[hora_str] = "concluido"
+                mapa_ocupados[hora_str] = "concluido"  # Emoji 🔵
             else:
-                mapa_ocupados[hora_str] = "cliente"
+                mapa_ocupados[hora_str] = "cliente"    # Emoji 🔴
                 
         grade, atual = [], hr_ab
         while atual < hr_fe:
@@ -301,6 +253,7 @@ def obter_grade_horarios_admin(data_iso: str):
     except Exception as e:
         print(f"Erro na grade: {e}")
         return []
+
 def alternar_bloqueio_horario(data_iso: str, hora: str):
     try:
         resposta = supabase.table("marcacoes").select("*").eq("data", data_iso).eq("hora", hora).neq("status", "Cancelada").execute()
@@ -328,6 +281,24 @@ def atualizar_status_agendamento(id_marcacao: int, novo_status: str):
         return True
     except Exception: return False
 
+def buscar_agendamento_pendente_do_dia(chat_id_cliente: int):
+    try:
+        hoje = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
+        resposta = supabase.table("marcacoes").select("*").eq("data", hoje).eq("status", "Pendente").execute()
+        return resposta.data if resposta.data else []
+    except Exception:
+        return []
+
+def fazer_checkin_por_id(id_agendamento: int):
+    try:
+        supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_agendamento).execute()
+        return True
+    except Exception:
+        return False
+
+# ==========================================
+# OPERAÇÕES DE CAIXA E DASHBOARD
+# ==========================================
 def gerar_dashboard():
     config = obter_configuracoes()
     gastos_fixos = config.get("gastos_fixos", 0)
@@ -355,17 +326,11 @@ def gerar_dashboard():
             "lucro_liquido_real": lucro
         }
     except Exception: return None
-def buscar_agendamento_pendente_do_dia(chat_id_cliente: int):
+
+def verificar_clientes_para_lembrete():
     try:
-        hoje = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
-        resposta = supabase.table("marcacoes").select("*").eq("data", hoje).eq("status", "Pendente").execute()
-        return resposta.data if resposta.data else []
+        data_alvo = (datetime.utcnow() - timedelta(hours=3) - timedelta(days=20)).strftime("%Y-%m-%d")
+        res = supabase.table("marcacoes").select("cliente, chat_id").eq("data", data_alvo).eq("status", "Concluído").execute()
+        return res.data if res.data else []
     except Exception:
         return []
-
-def fazer_checkin_por_id(id_agendamento: int):
-    try:
-        supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_agendamento).execute()
-        return True
-    except Exception:
-        return False
