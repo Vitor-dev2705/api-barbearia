@@ -275,11 +275,13 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
 # ==========================================
 def obter_grade_horarios_admin(data_iso: str):
     try:
+        # Define o horário padrão de atendimento
         hr_ab, hr_fe = datetime.strptime("09:00", "%H:%M"), datetime.strptime("18:00", "%H:%M")
+        
+        # Busca todas as marcações do dia (exceto canceladas)
         marcacoes = supabase.table("marcacoes").select("*").eq("data", data_iso).neq("status", "Cancelada").execute()
         
-        # MAPEAMENTO DE CORES/STATUS:
-        # Pendente = cliente (vermelho) | Bloqueado = bloqueado (X) | Concluído = concluido (azul)
+        # MAPEAMENTO VISUAL: Aqui garantimos que o emoji mude conforme o status
         mapa_ocupados = {}
         for m in marcacoes.data:
             hora_str = str(m['hora'])[:5]
@@ -296,7 +298,9 @@ def obter_grade_horarios_admin(data_iso: str):
             grade.append({"hora": h_str, "estado": mapa_ocupados.get(h_str, "livre")})
             atual += timedelta(minutes=30)
         return grade
-    except Exception: return []
+    except Exception as e:
+        print(f"Erro na grade: {e}")
+        return []
 def alternar_bloqueio_horario(data_iso: str, hora: str):
     try:
         resposta = supabase.table("marcacoes").select("*").eq("data", data_iso).eq("hora", hora).neq("status", "Cancelada").execute()
