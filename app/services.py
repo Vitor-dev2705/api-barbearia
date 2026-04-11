@@ -30,8 +30,7 @@ def obter_dados_admin():
         if os.path.exists("admin_id.txt"):
             with open("admin_id.txt", "r") as f:
                 conteudo = f.read().strip()
-                if conteudo:
-                    return conteudo
+                if conteudo: return conteudo
     except Exception: pass
 
     try:
@@ -46,15 +45,12 @@ def registrar_admin(chat_id: int):
     try:
         with open("admin_id.txt", "w") as f:
             f.write(str(chat_id))
-    except Exception as e: 
-        print("Erro Arquivo:", e)
+    except Exception: pass
 
     try:
         supabase.table("configuracoes").upsert({"id": 1, "admin_chat_id": chat_id}).execute()
         return True
-    except Exception as e: 
-        print("Erro BD:", e)
-        return False
+    except Exception: return False
 
 # ==========================================
 # PROCESSAMENTO DE LINGUAGEM NATURAL (IA)
@@ -73,11 +69,7 @@ def processar_texto_com_ia(texto_cliente: str):
         Responda APENAS um JSON plano: {{"data": "DD-MM-YYYY", "hora": "HH:MM", "servico": "nome"}}
         """
         
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        
+        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
         texto_limpo = response.text.strip()
         if "```json" in texto_limpo:
             texto_limpo = texto_limpo.split("```json")[1].split("```")[0].strip()
@@ -89,160 +81,113 @@ def processar_texto_com_ia(texto_cliente: str):
         return {"data": None, "hora": None, "servico": None}
 
 def limpar_mensagem(mensagem: str):
-    palavras = message.lower().split()
+    palavras = mensagem.lower().split()
     mensagem_limpa = [dicionario_nlp.get(p, p) for p in palavras]
     return " ".join(mensagem_limpa)
 
 # ==========================================
-# GERENCIAMENTO DE DADOS DA BARBEARIA
+# GESTÃO DE SERVIÇOS (BARBEIRO)
 # ==========================================
-def obter_duracao_servico(nome_servico: str):
+def obter_servicos_db():
     try:
-        resposta = supabase.table("servicos").select("duracao_minutos").ilike("nome", f"%{nome_servico}%").execute()
-        if resposta.data:
-            return int(resposta.data[0]["duracao_minutos"])
-    except Exception: pass
-    return 30
+        res = supabase.table("servicos").select("*").order("nome").execute()
+        return res.data or []
+    except Exception: return []
 
-def obter_configuracoes():
+def salvar_servico_db(nome: str, preco: float, duracao: int = 30):
     try:
-        resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
-        if resposta.data:
-            return resposta.data[0]
-    except Exception: pass
-    return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
-
-def atualizar_despesa(coluna: str, valor: float):
-    try:
-        supabase.table("configuracoes").update({coluna: valor}).eq("id", 1).execute()
+        # Upsert: se o nome existir, atualiza preço/duração. Se não, cria.
+        supabase.table("servicos").upsert({
+            "nome": nome.strip().title(),
+            "preco": preco,
+            "duracao_minutos": duracao
+        }, on_conflict="nome").execute()
         return True
     except Exception: return False
 
-def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
+def deletar_servico_db(id_servico: int):
     try:
-        resposta = supabase.table("servicos").update({"preco": novo_valor}).ilike("nome", nome_servico).execute()
-        return len(resposta.data) > 0
+        supabase.table("servicos").delete().eq("id", id_servico).execute()
+        return True
     except Exception: return False
+
+def obter_dados_servico_por_nome(nome_servico: str):
+    try:
+        res = supabase.table("servicos").select("*").ilike("nome", nome_servico).execute()
+        return res.data[0] if res.data else None
+    except Exception: return None
 
 # ==========================================
 # LÓGICA DE AGENDAMENTO E EXPEDIENTE
 # ==========================================
+def obter_duracao_servico(nome_servico: str):
+    servico = obter_dados_servico_por_nome(nome_servico)
+    return servico["duracao_minutos"] if servico else 30
+
 def obter_slots_livres(data_iso: str, duracao: int):
     try:
         duracao = int(duracao) if duracao else 30
         data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
-        dia_semana = data_obj.weekday()
+        expediente = supabase.table("expediente").select("*").eq("dia_semana", data_obj.weekday()).execute()
+        dados_exp = expediente.data[0] if expediente.data else None
+
+        if not dados_exp or not dados_exp.get('aberto', False): return []
         
-        try:
-            expediente = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
-            dados_exp = expediente.data[0] if expediente.data else None
-        except Exception:
-            dados_exp = None
-
-        if not dados_exp:
-            if dia_semana == 6: return []
-            str_ab, str_fe = "09:00", "18:00"
-        else:
-            if not dados_exp.get('aberto', False): return []
-            str_ab = str(dados_exp.get('hora_abertura', '09:00'))[:5]
-            str_fe = str(dados_exp.get('hora_fechamento', '18:00'))[:5]
-
+        str_ab = str(dados_exp.get('hora_abertura', '09:00'))[:5]
+        str_fe = str(dados_exp.get('hora_fechamento', '18:00'))[:5]
         hr_abertura = datetime.strptime(str_ab, "%H:%M")
         hr_fechamento = datetime.strptime(str_fe, "%H:%M")
 
-        try:
-            marcacoes = supabase.table("marcacoes").select("hora", "servico").eq("data", data_iso).neq("status", "Cancelada").execute()
-            lista_marcacoes = marcacoes.data or []
-        except Exception:
-            lista_marcacoes = []
-
+        marcacoes = supabase.table("marcacoes").select("hora, servico").eq("data", data_iso).neq("status", "Cancelada").execute()
         ocupados = []
-        for m in lista_marcacoes:
+        for m in (marcacoes.data or []):
             try:
-                inicio = datetime.strptime(str(m.get('hora', '00:00'))[:5].strip(), "%H:%M")
-                d_serv = int(obter_duracao_servico(m.get('servico', '')))
-                fim = inicio + timedelta(minutes=d_serv)
+                inicio = datetime.strptime(str(m['hora'])[:5].strip(), "%H:%M")
+                fim = inicio + timedelta(minutes=obter_duracao_servico(m['servico']))
                 ocupados.append((inicio, fim))
             except Exception: continue
 
-        slots = []
-        atual = hr_abertura
+        slots, atual = [], hr_abertura
         fuso_br = datetime.utcnow() - timedelta(hours=3)
-        is_hoje = data_iso == fuso_br.strftime("%Y-%m-%d")
-
         while atual + timedelta(minutes=duracao) <= hr_fechamento:
-            fim_slot = atual + timedelta(minutes=duracao)
-            if is_hoje and atual.time() <= fuso_br.time():
-                atual += timedelta(minutes=30)
-                continue
-            conflito = False
-            for (o_ini, o_fim) in ocupados:
-                if atual < o_fim and fim_slot > o_ini:
-                    conflito = True
-                    break
-            if not conflito: slots.append(atual.strftime("%H:%M"))
+            if not (data_iso == fuso_br.strftime("%Y-%m-%d") and atual.time() <= fuso_br.time()):
+                conflito = False
+                for (o_ini, o_fim) in ocupados:
+                    if atual < o_fim and (atual + timedelta(minutes=duracao)) > o_ini:
+                        conflito = True
+                        break
+                if not conflito: slots.append(atual.strftime("%H:%M"))
             atual += timedelta(minutes=30)
         return slots
     except Exception: return []
 
-def verificar_vaga_e_sugerir(data: str, hora_desejada: str):
+def agendar_servico(cliente: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
     try:
-        resposta = supabase.table("marcacoes").select("hora").eq("data", data).neq("status", "Cancelada").execute()
-        horarios_ocupados = [item["hora"] for item in resposta.data]
-        if hora_desejada not in horarios_ocupados: return True, hora_desejada
-        formato = "%H:%M"
-        hora_obj = datetime.strptime(hora_desejada, formato)
-        nova_hora_obj = hora_obj + timedelta(hours=1)
-        nova_hora = nova_hora_obj.strftime(formato)
-        while nova_hora in horarios_ocupados:
-            nova_hora_obj += timedelta(hours=1)
-            nova_hora = nova_hora_obj.strftime(formato)
-        return False, nova_hora
-    except Exception: return False, None
+        servico = obter_dados_servico_por_nome(servico_nome)
+        if not servico: return "❌ Erro: Serviço não encontrado."
 
-def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor: float):
-    duracao = obter_duracao_servico(servico)
-    formato_hora = "%H:%M"
-    try:
-        hora_inicio = datetime.strptime(hora, formato_hora)
-        hora_fim = hora_inicio + timedelta(minutes=duracao)
-        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
-    except Exception: return "Horário com formato inválido."
-
-    disponivel, horario_final = verificar_vaga_e_sugerir(data_iso, hora)
-    
-    if disponivel:
-        novo_dado = {"cliente": cliente, "servico": servico, "data": data_iso, "hora": hora, "valor": valor, "status": "Pendente"}
-        try:
-            supabase.table("marcacoes").insert(novo_dado).execute()
-            data_formatada_br = data_obj.strftime("%d/%m/%Y")
-            return f"Maravilha! Seu {servico} ({duracao} min) foi marcado para {data_formatada_br} às {hora}."
-        except Exception: return "Erro ao salvar no banco."
-    else:
-        if horario_final: return f"Puxa, às {hora} já estou ocupado. Que tal às {horario_final}?"
-        return "Horário indisponível."
+        novo_agendamento = {
+            "cliente": cliente, "servico": servico['nome'], "data": data_iso,
+            "hora": hora, "valor": servico['preco'], "status": "Pendente", "chat_id": chat_id
+        }
+        supabase.table("marcacoes").insert(novo_agendamento).execute()
+        data_br = datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
+        return f"✅ Agendado: {servico['nome']}\n💰 Valor: R$ {servico['preco']:.2f}\n📅 Data: {data_br} às {hora}."
+    except Exception: return "❌ Erro ao salvar agendamento."
 
 # ==========================================
 # PAINEL DO BARBEIRO E CHECK-IN
 # ==========================================
 def obter_grade_horarios_admin(data_iso: str):
     try:
-        # Define o horário padrão de atendimento
         hr_ab, hr_fe = datetime.strptime("09:00", "%H:%M"), datetime.strptime("18:00", "%H:%M")
-        
-        # Busca todas as marcações do dia (exceto canceladas)
         marcacoes = supabase.table("marcacoes").select("*").eq("data", data_iso).neq("status", "Cancelada").execute()
-        
-        # MAPEAMENTO VISUAL: Aqui garantimos que o emoji mude conforme o status
         mapa_ocupados = {}
         for m in marcacoes.data:
             hora_str = str(m['hora'])[:5]
-            if m['status'] == "Bloqueado":
-                mapa_ocupados[hora_str] = "bloqueado"  # Emoji ❌
-            elif m['status'] == "Concluído":
-                mapa_ocupados[hora_str] = "concluido"  # Emoji 🔵
-            else:
-                mapa_ocupados[hora_str] = "cliente"    # Emoji 🔴
+            if m['status'] == "Bloqueado": mapa_ocupados[hora_str] = "bloqueado"
+            elif m['status'] == "Concluído": mapa_ocupados[hora_str] = "concluido"
+            else: mapa_ocupados[hora_str] = "cliente"
                 
         grade, atual = [], hr_ab
         while atual < hr_fe:
@@ -250,23 +195,19 @@ def obter_grade_horarios_admin(data_iso: str):
             grade.append({"hora": h_str, "estado": mapa_ocupados.get(h_str, "livre")})
             atual += timedelta(minutes=30)
         return grade
-    except Exception as e:
-        print(f"Erro na grade: {e}")
-        return []
+    except Exception: return []
 
 def alternar_bloqueio_horario(data_iso: str, hora: str):
     try:
         resposta = supabase.table("marcacoes").select("*").eq("data", data_iso).eq("hora", hora).neq("status", "Cancelada").execute()
         if not resposta.data:
-            novo_dado = {"cliente": "ADMIN", "servico": "Bloqueio", "data": data_iso, "hora": hora, "valor": 0.0, "status": "Bloqueado"}
-            supabase.table("marcacoes").insert(novo_dado).execute()
+            supabase.table("marcacoes").insert({"cliente": "ADMIN", "servico": "Bloqueio", "data": data_iso, "hora": hora, "valor": 0.0, "status": "Bloqueado"}).execute()
             return "Bloqueado"
         else:
-            marcacao = resposta.data[0]
-            if marcacao.get("status") == "Bloqueado":
-                supabase.table("marcacoes").delete().eq("id", marcacao["id"]).execute()
+            if resposta.data[0].get("status") == "Bloqueado":
+                supabase.table("marcacoes").delete().eq("id", resposta.data[0]["id"]).execute()
                 return "Desbloqueado"
-            else: return "Ocupado_Cliente"
+            return "Ocupado_Cliente"
     except Exception: return "Erro"
 
 def obter_detalhes_agendamento(data_iso: str, hora: str):
@@ -281,49 +222,48 @@ def atualizar_status_agendamento(id_marcacao: int, novo_status: str):
         return True
     except Exception: return False
 
-def buscar_agendamento_pendente_do_dia(chat_id_cliente: int):
+def buscar_agendamento_pendente_do_dia(nome_cliente: str):
     try:
         hoje = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
-        resposta = supabase.table("marcacoes").select("*").eq("data", hoje).eq("status", "Pendente").execute()
-        return resposta.data if resposta.data else []
-    except Exception:
-        return []
+        res = supabase.table("marcacoes").select("*").eq("data", hoje).ilike("cliente", f"%{nome_cliente}%").eq("status", "Pendente").execute()
+        return res.data if res.data else []
+    except Exception: return []
 
 def fazer_checkin_por_id(id_agendamento: int):
     try:
         supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_agendamento).execute()
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 # ==========================================
 # OPERAÇÕES DE CAIXA E DASHBOARD
 # ==========================================
+def obter_configuracoes():
+    try:
+        resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
+        return resposta.data[0] if resposta.data else {}
+    except Exception: return {}
+
+def atualizar_despesa(coluna: str, valor: float):
+    try:
+        supabase.table("configuracoes").update({coluna: valor}).eq("id", 1).execute()
+        return True
+    except Exception: return False
+
 def gerar_dashboard():
     config = obter_configuracoes()
-    gastos_fixos = config.get("gastos_fixos", 0)
-    custo_produtos = config.get("custo_produtos", 0)
-    despesas_totais = gastos_fixos + custo_produtos
-
     try:
-        resposta = supabase.table("marcacoes").select("data, valor").eq("status", "Concluído").execute()
-        marcacoes = resposta.data or []
-        
+        res = supabase.table("marcacoes").select("data, valor").eq("status", "Concluído").execute()
+        marcacoes = res.data or []
         total_ganho = sum(item["valor"] for item in marcacoes)
-        lucro = total_ganho - despesas_totais
-
         hoje = datetime.utcnow() - timedelta(hours=3)
-        inicio_semana = hoje - timedelta(days=hoje.weekday())
-        str_inicio_semana = inicio_semana.strftime("%Y-%m-%d")
-
-        faturamento_semana = sum(item["valor"] for item in marcacoes if item["data"] >= str_inicio_semana)
-
+        segunda = (hoje - timedelta(days=hoje.weekday())).strftime("%Y-%m-%d")
+        faturamento_semana = sum(item["valor"] for item in marcacoes if item["data"] >= segunda)
+        gastos = float(config.get("gastos_fixos", 0)) + float(config.get("custo_produtos", 0))
         return {
-            "faturamento_bruto": total_ganho,
-            "faturamento_semana": faturamento_semana,
-            "gastos_fixos": gastos_fixos,
-            "custo_produtos": custo_produtos,
-            "lucro_liquido_real": lucro
+            "faturamento_bruto": total_ganho, "faturamento_semana": faturamento_semana,
+            "gastos_fixos": config.get("gastos_fixos", 0), "custo_produtos": config.get("custo_produtos", 0),
+            "lucro_liquido_real": total_ganho - gastos
         }
     except Exception: return None
 
@@ -332,5 +272,4 @@ def verificar_clientes_para_lembrete():
         data_alvo = (datetime.utcnow() - timedelta(hours=3) - timedelta(days=20)).strftime("%Y-%m-%d")
         res = supabase.table("marcacoes").select("cliente, chat_id").eq("data", data_alvo).eq("status", "Concluído").execute()
         return res.data if res.data else []
-    except Exception:
-        return []
+    except Exception: return []

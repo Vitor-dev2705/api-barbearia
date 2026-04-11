@@ -13,7 +13,8 @@ from app.services import (
     obter_detalhes_agendamento, atualizar_status_agendamento,
     obter_dados_admin, registrar_admin, gerar_dashboard, 
     atualizar_despesa, buscar_agendamento_pendente_do_dia, 
-    fazer_checkin_por_id, verificar_clientes_para_lembrete
+    fazer_checkin_por_id, verificar_clientes_para_lembrete,
+    obter_servicos_db, salvar_servico_db, deletar_servico_db, obter_dados_servico_por_nome
 )
 
 # ==========================================
@@ -45,12 +46,13 @@ def editar_mensagem_com_botoes(chat_id: int, message_id: int, texto: str, botoes
     except Exception: pass
 
 # ==========================================
-# GERAÇÃO DO PAINEL ADMIN (MENU E FINANÇAS)
+# GERAÇÃO DO PAINEL ADMIN (MENU E GESTÃO)
 # ==========================================
 def gerar_menu_principal_admin():
     return [
         [{"text": "📅 Gerenciar Agenda", "callback_data": "ADM|CALENDARIO"}],
         [{"text": "💰 Painel Financeiro", "callback_data": "ADM|DASH"}],
+        [{"text": "✂️ Gerenciar Serviços", "callback_data": "ADM|SERVICOS"}],
         [{"text": "📣 Avisar Clientes (20 dias)", "callback_data": "ADM|AVISO"}]
     ]
 
@@ -75,12 +77,10 @@ def gerar_botoes_horarios_admin(data_iso: str):
     grade = obter_grade_horarios_admin(data_iso)
     botoes, linha = [], []
     for item in grade:
-        # DEFINIÇÃO DOS EMOJIS (AZUL PARA CONCLUÍDO)
         icone = "✅"
         if item["estado"] == "bloqueado": icone = "❌"
         elif item["estado"] == "cliente": icone = "🔴"
         elif item["estado"] == "concluido": icone = "🔵"
-        
         linha.append({"text": f"{icone} {item['hora']}", "callback_data": f"ADM|CLICK|{data_iso}|{item['hora']}"})
         if len(linha) == 3: botoes.append(linha); linha = []
     if linha: botoes.append(linha)
@@ -97,109 +97,114 @@ async def bot_recebe_mensagem(request: Request):
 
         # --- FLUXO 1: CLIQUES EM BOTÕES (CALLBACKS) ---
         if "callback_query" in dados:
-            query = dados["callback_query"]
-            chat_id = query["message"]["chat"]["id"]
-            msg_id = query["message"]["message_id"]
-            clique = query["data"]
+            query = dados["callback_query"]; chat_id = query["message"]["chat"]["id"]
+            msg_id = query["message"]["message_id"]; dados_clique = query["data"]
             nome_user = query["from"]["first_name"]
 
-            # --- SEGURANÇA ADMIN ---
-            if clique.startswith("ADM|"):
+            if dados_clique.startswith("ADM|"):
                 id_admin = obter_dados_admin()
                 if str(id_admin).strip() != str(chat_id).strip():
                     enviar_mensagem_telegram(chat_id, "⛔ Acesso negado.")
                     return {"status": "ok"}
 
-                if clique == "ADM|MENU":
+                if dados_clique == "ADM|MENU":
                     editar_mensagem_com_botoes(chat_id, msg_id, "🛠️ **Painel Admin**", gerar_menu_principal_admin())
-                elif clique == "ADM|CALENDARIO":
+                elif dados_clique == "ADM|CALENDARIO":
                     editar_mensagem_com_botoes(chat_id, msg_id, "📅 **Agenda**", gerar_botoes_calendario_admin())
-                elif clique == "ADM|AVISO":
-                    clientes = verificar_clientes_para_lembrete()
-                    if not clientes: 
-                        enviar_mensagem_telegram(chat_id, "✅ Nenhum cliente para avisar hoje.")
-                    else:
-                        for clie in clientes:
-                            msg = f"Olá {clie['cliente']}! 👋 Já faz 20 dias do seu último corte. A agenda está aberta, que tal agendar?"
-                            enviar_mensagem_com_botoes(clie['chat_id'], msg, [[{"text": "✂️ Agendar Agora", "callback_data": "MENU"}]])
-                        enviar_mensagem_telegram(chat_id, f"📩 {len(clientes)} Lembrete(s) enviado(s)!")
-                elif clique == "ADM|DASH":
+                elif dados_clique == "ADM|SERVICOS":
+                    servs = obter_servicos_db()
+                    txt = "📋 **Gestão de Serviços**\n\n"
+                    btns = []
+                    for s in servs:
+                        txt += f"🔹 {s['nome']} - R$ {s['preco']:.2f}\n"
+                        btns.append([{"text": f"🗑 Excluir {s['nome']}", "callback_data": f"ADM|DEL|{s['id']}"}])
+                    txt += "\n✨ _Adicionar/Editar:_\n`add Nome, Valor`"
+                    btns.append([{"text": "⬅️ Voltar", "callback_data": "ADM|MENU"}])
+                    editar_mensagem_com_botoes(chat_id, msg_id, txt, btns)
+                elif dados_clique.startswith("ADM|DEL|"):
+                    id_s = dados_clique.split("|")[2]
+                    deletar_servico_db(int(id_s))
+                    enviar_mensagem_telegram(chat_id, "✅ Serviço removido!")
+                    editar_mensagem_com_botoes(chat_id, msg_id, "Atualizando...", gerar_menu_principal_admin())
+                elif dados_clique == "ADM|DASH":
                     d = gerar_dashboard()
-                    txt = f"💰 **Painel Financeiro**\n\n🔹 **Semana:** R$ {d['faturamento_semana']:.2f}\n🔹 **Total:** R$ {d['faturamento_bruto']:.2f}\n---------------------------\n💎 **LUCRO:** R$ {d['lucro_liquido_real']:.2f}"
+                    txt = f"💰 **Financeiro**\n\nSemana: R$ {d['faturamento_semana']:.2f}\nTotal: R$ {d['faturamento_bruto']:.2f}\n---------------------------\n💎 **LUCRO:** R$ {d['lucro_liquido_real']:.2f}"
                     editar_mensagem_com_botoes(chat_id, msg_id, txt, [[{"text": "⬅️ Voltar", "callback_data": "ADM|MENU"}]])
-                elif clique.startswith("ADM|DIA|"):
-                    dt = clique.split("|")[2]
+                elif dados_clique.startswith("ADM|DIA|"):
+                    dt = dados_clique.split("|")[2]
                     editar_mensagem_com_botoes(chat_id, msg_id, f"📅 Agenda {dt}", gerar_botoes_horarios_admin(dt))
-                elif clique.startswith("ADM|CLICK|"):
-                    _, _, dt, hr = clique.split("|"); det = obter_detalhes_agendamento(dt, hr)
+                elif dados_clique.startswith("ADM|CLICK|"):
+                    _, _, dt, hr = dados_clique.split("|"); det = obter_detalhes_agendamento(dt, hr)
                     if det and det["status"] != "Bloqueado":
                         emoji = "🔴" if det["status"] == "Pendente" else "🔵"
                         txt = f"👤 **Cliente:** {det['cliente']}\n✂️ **Serviço:** {det['servico']}\n⏰ **Horário:** {hr}\n{emoji} **Status:** {det['status']}"
                         btns = []
-                        if det["status"] == "Pendente": 
-                            btns.append([{"text": "✅ Concluir (Check-in)", "callback_data": f"ADM|DONE|{det['id']}|{dt}"}])
-                        btns.append([{"text": "🗑️ Cancelar Agendamento", "callback_data": f"ADM|CANCEL|{det['id']}|{dt}"}])
-                        btns.append([{"text": "⬅️ Voltar", "callback_data": f"ADM|DIA|{dt}"}])
+                        if det["status"] == "Pendente": btns.append([{"text": "✅ Concluir (Check-in)", "callback_data": f"ADM|DONE|{det['id']}|{dt}"}])
+                        btns.append([{"text": "🗑️ Cancelar Agendamento", "callback_data": f"ADM|CANCEL|{det['id']}|{dt}"}, {"text": "⬅️ Voltar", "callback_data": f"ADM|DIA|{dt}"}])
                         editar_mensagem_com_botoes(chat_id, msg_id, txt, btns)
                     else:
                         alternar_bloqueio_horario(dt, hr); editar_mensagem_com_botoes(chat_id, msg_id, f"📅 Agenda {dt}", gerar_botoes_horarios_admin(dt))
-                elif clique.startswith("ADM|DONE|"):
-                    _, _, id_m, dt = clique.split("|"); atualizar_status_agendamento(int(id_m), "Concluído")
+                elif dados_clique.startswith("ADM|DONE|"):
+                    _, _, id_m, dt = dados_clique.split("|"); atualizar_status_agendamento(int(id_m), "Concluído")
                     editar_mensagem_com_botoes(chat_id, msg_id, "✅ **Concluído!**", [[{"text": "⬅️ Voltar", "callback_data": f"ADM|DIA|{dt}"}]])
-                elif clique.startswith("ADM|CANCEL|"):
-                    _, _, id_m, dt = clique.split("|"); atualizar_status_agendamento(int(id_m), "Cancelada")
-                    editar_mensagem_com_botoes(chat_id, msg_id, "❌ **Cancelado!**", [[{"text": "⬅️ Voltar", "callback_data": f"ADM|DIA|{dt}"}]])
 
             # --- LÓGICA DO CLIENTE ---
-            elif clique == "MENU":
-                btns = [[{"text": "✂️ Corte", "callback_data": "S|Corte Simples"}], [{"text": "🧔 Barba", "callback_data": "S|Barba"}]]
+            elif dados_clique == "MENU":
+                servs = obter_servicos_db()
+                btns = [[{"text": f"✂️ {s['nome']} - R$ {s['preco']:.2f}", "callback_data": f"S|{s['nome']}"}] for s in servs]
                 enviar_mensagem_com_botoes(chat_id, "O que deseja agendar?", btns)
-            elif clique.startswith("CLIENTE|CHECKIN|"):
-                id_agend = clique.split("|")[2]; fazer_checkin_por_id(int(id_agend))
-                editar_mensagem_com_botoes(chat_id, msg_id, "✅ **Check-in realizado!** Bom corte!", [])
-            elif clique.startswith("S|"):
-                serv = clique.split("|")[1]; dur = obter_duracao_servico(serv); b_dias, hj = [], datetime.utcnow() - timedelta(hours=3)
+            elif dados_clique.startswith("CLIENTE|CHECKIN|"):
+                id_agend = dados_clique.split("|")[2]; fazer_checkin_por_id(int(id_agend))
+                editar_mensagem_com_botoes(chat_id, msg_id, "✅ **Check-in realizado!**", [])
+            elif dados_clique.startswith("S|"):
+                serv_nome = dados_clique.split("|")[1]; dur = obter_duracao_servico(serv_nome); b_dias, hj = [], datetime.utcnow() - timedelta(hours=3)
                 for i in range(7):
                     dt_iso = (hj + timedelta(days=i)).strftime("%Y-%m-%d")
-                    if obter_slots_livres(dt_iso, dur): 
-                        b_dias.append([{"text": (hj + timedelta(days=i)).strftime("%d/%m"), "callback_data": f"D|{serv}|{dt_iso}"}])
-                enviar_mensagem_com_botoes(chat_id, f"📅 Para quando o {serv}?", b_dias)
-            elif clique.startswith("D|"):
-                _, s, d = clique.split("|"); slots = obter_slots_livres(d, obter_duracao_servico(s)); b_hrs, lin = [], []
+                    if obter_slots_livres(dt_iso, dur): b_dias.append([{"text": (hj + timedelta(days=i)).strftime("%d/%m"), "callback_data": f"D|{serv_nome}|{dt_iso}"}])
+                enviar_mensagem_com_botoes(chat_id, f"📅 Para quando o {serv_nome}?", b_dias)
+            elif dados_clique.startswith("D|"):
+                _, s, d = dados_clique.split("|"); slots = obter_slots_livres(d, obter_duracao_servico(s)); b_hrs, lin = [], []
                 for h in slots:
                     lin.append({"text": h, "callback_data": f"H|{s}|{d}|{h}"})
                     if len(lin) == 3: b_hrs.append(lin); lin = []
                 if lin: b_hrs.append(lin)
                 enviar_mensagem_com_botoes(chat_id, "⏰ Escolha o horário:", b_hrs)
-            elif clique.startswith("H|"):
-                _, s, d, h = clique.split("|"); res = agendar_servico(nome_user, s, d, h, 35.0, chat_id)
+            elif dados_clique.startswith("H|"):
+                _, s, d, h = dados_clique.split("|"); res = agendar_servico(nome_user, s, d, h, chat_id)
                 enviar_mensagem_telegram(chat_id, res)
             return {"status": "ok"}
 
         # --- FLUXO 2: MENSAGENS DE TEXTO ---
         if "message" not in dados: return {"status": "ignorado"}
-        chat_id = dados["message"]["chat"]["id"]; texto_limpo = limpar_mensagem(dados["message"].get("text", "")); nome_user = dados["message"]["chat"].get("first_name", "Cliente")
+        chat_id = dados["message"]["chat"]["id"]; texto_cru = dados["message"].get("text", ""); nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
         id_admin = obter_dados_admin()
 
-        if texto_limpo.startswith("admin "):
-            if texto_limpo.split("admin ")[1] == CHAVE_MESTRE:
+        if str(id_admin) == str(chat_id):
+            if texto_cru.lower().startswith("add "):
+                try:
+                    nome_s, preco_s = texto_cru[4:].split(",")
+                    salvar_servico_db(nome_s.strip(), float(preco_s.strip()))
+                    enviar_mensagem_telegram(chat_id, f"✅ Serviço {nome_s} salvo!")
+                except: enviar_mensagem_telegram(chat_id, "❌ Use: `add Nome, Valor`")
+                return {"status": "ok"}
+        
+        if texto_cru.lower().startswith("admin "):
+            if texto_cru.split("admin ")[1] == CHAVE_MESTRE:
                 registrar_admin(chat_id); enviar_mensagem_com_botoes(chat_id, "✅ **Dono Registrado!**", gerar_menu_principal_admin())
             return {"status": "ok"}
-        if texto_limpo in ["admin", "painel"] and str(id_admin) == str(chat_id):
+        
+        if texto_cru.lower() in ["admin", "painel"] and str(id_admin) == str(chat_id):
             enviar_mensagem_com_botoes(chat_id, "🛠️ **Painel Admin**", gerar_menu_principal_admin()); return {"status": "ok"}
-        if (texto_limpo.startswith("custo fixo ") or texto_limpo.startswith("custo produto ")) and str(id_admin) == str(chat_id):
-            col = "gastos_fixos" if "fixo" in texto_limpo else "custo_produtos"; val = float(re.findall(r'\d+', texto_limpo)[0])
-            atualizar_despesa(col, val); enviar_mensagem_telegram(chat_id, f"✅ {col} atualizado!"); return {"status": "ok"}
 
-        agendamentos_hoje = buscar_agendamento_pendente_do_dia(nome_user)
-        if agendamentos_hoje and texto_limpo not in ["admin", "painel"]:
-            ag = agendamentos_hoje[0]
-            txt_ch = f"Olá! 👋 Vi que você tem horário hoje às {str(ag['hora'])[:5]}. Já chegou?"
-            enviar_mensagem_com_botoes(chat_id, txt_ch, [[{"text": "📍 Sim, cheguei!", "callback_data": f"CLIENTE|CHECKIN|{ag['id']}"}], [{"text": "📅 Ver Menu", "callback_data": "MENU"}]])
+        agendamentos = buscar_agendamento_pendente_do_dia(nome_cliente)
+        if agendamentos and texto_cru.lower() not in ["admin", "painel"]:
+            ag = agendamentos[0]; txt = f"Olá! 👋 Vi que você tem horário hoje às {str(ag['hora'])[:5]}. Já chegou?"
+            enviar_mensagem_com_botoes(chat_id, txt, [[{"text": "📍 Sim!", "callback_data": f"CLIENTE|CHECKIN|{ag['id']}"}], [{"text": "📅 Menu", "callback_data": "MENU"}]])
             return {"status": "ok"}
 
-        btns = [[{"text": "✂️ Corte", "callback_data": "S|Corte Simples"}], [{"text": "🧔 Barba", "callback_data": "S|Barba"}]]
-        enviar_mensagem_com_botoes(chat_id, f"Olá {nome_user}! O que deseja agendar?", btns)
+        servs = obter_servicos_db()
+        btns = [[{"text": f"✂️ {s['nome']} - R$ {s['preco']:.2f}", "callback_data": f"S|{s['nome']}"}] for s in servs]
+        enviar_mensagem_com_botoes(chat_id, f"Olá {nome_cliente}! O que deseja agendar?", btns)
 
     except Exception as e:
         print(f"Erro na Rota: {e}"); return {"status": "erro"}
