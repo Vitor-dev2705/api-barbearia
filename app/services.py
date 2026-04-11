@@ -26,23 +26,39 @@ dicionario_nlp = {
 }
 
 def obter_dados_admin():
+    # 1. Tenta ler do arquivo físico (À prova de falhas do servidor)
+    try:
+        if os.path.exists("admin_id.txt"):
+            with open("admin_id.txt", "r") as f:
+                conteudo = f.read().strip()
+                if conteudo:
+                    return conteudo
+    except Exception: pass
+
+    # 2. Tenta ler do banco de dados (Backup)
     try:
         resposta = supabase.table("configuracoes").select("admin_chat_id").eq("id", 1).execute()
-        if resposta.data and resposta.data[0].get("admin_chat_id"):
-            return str(resposta.data[0]["admin_chat_id"])
+        if resposta.data and len(resposta.data) > 0 and resposta.data[0].get("admin_chat_id"):
+            return str(resposta.data[0]["admin_chat_id"]).strip()
     except Exception: pass
+    
     return None
 
 def registrar_admin(chat_id: int):
+    # 1. Salva em um arquivo físico local (Isso não apaga quando o processo muda)
     try:
-        # Verifica se a linha 1 existe. Se não existir, cria. Se existir, atualiza.
-        res = supabase.table("configuracoes").select("id").eq("id", 1).execute()
-        if not res.data:
-            supabase.table("configuracoes").insert({"id": 1, "admin_chat_id": chat_id}).execute()
-        else:
-            supabase.table("configuracoes").update({"admin_chat_id": chat_id}).eq("id", 1).execute()
+        with open("admin_id.txt", "w") as f:
+            f.write(str(chat_id))
+    except Exception as e: 
+        print("Erro Arquivo:", e)
+
+    # 2. Salva no banco de dados com UPSERT (força a inserção ou atualização)
+    try:
+        supabase.table("configuracoes").upsert({"id": 1, "admin_chat_id": chat_id}).execute()
         return True
-    except Exception: return False
+    except Exception as e: 
+        print("Erro BD:", e)
+        return False
 
 # ==========================================
 # PROCESSAMENTO DE LINGUAGEM NATURAL (IA)
@@ -104,8 +120,7 @@ def obter_duracao_servico(nome_servico: str):
         resposta = supabase.table("servicos").select("duracao_minutos").ilike("nome", f"%{nome_servico}%").execute()
         if resposta.data:
             return int(resposta.data[0]["duracao_minutos"])
-    except Exception:
-        pass
+    except Exception: pass
     return 30
 
 def obter_configuracoes():
@@ -113,8 +128,7 @@ def obter_configuracoes():
         resposta = supabase.table("configuracoes").select("*").eq("id", 1).execute()
         if resposta.data:
             return resposta.data[0]
-    except Exception:
-        pass
+    except Exception: pass
     return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
 
 def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
@@ -124,15 +138,13 @@ def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
             "custo_aluguel": novo_aluguel, "custo_produtos": novos_produtos, "gastos_fixos": novo_total
         }).eq("id", 1).execute()
         return novo_total
-    except Exception: 
-        return 0
+    except Exception: return 0
 
 def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
     try:
         resposta = supabase.table("servicos").update({"preco": novo_valor}).ilike("nome", nome_servico).execute()
         return len(resposta.data) > 0
-    except Exception: 
-        return False
+    except Exception: return False
 
 # ==========================================
 # LÓGICA DE AGENDAMENTO E EXPEDIENTE

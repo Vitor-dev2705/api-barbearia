@@ -92,10 +92,10 @@ async def bot_recebe_mensagem(request: Request):
             dados_clique = query["data"]
             nome_cliente = query["from"]["first_name"]
 
-            # TRAVA DE SEGURANÇA BLINDADA
+            # TRAVA DE SEGURANÇA (Arquivo de Texto e Supabase)
             if dados_clique.startswith("ADM|"):
                 id_admin_cadastrado = obter_dados_admin()
-                if str(id_admin_cadastrado) != str(chat_id):
+                if str(id_admin_cadastrado).strip() != str(chat_id).strip():
                     enviar_mensagem_telegram(chat_id, "⛔ Acesso negado. Apenas o dispositivo do dono pode realizar esta ação.")
                     return {"status": "ok"}
 
@@ -184,7 +184,7 @@ async def bot_recebe_mensagem(request: Request):
         nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
         texto_limpo = limpar_mensagem(texto_cru)
         
-        # SISTEMA DE LOGIN ÚNICO DO BARBEIRO (DEVICE BINDING)
+        # SISTEMA DE LOGIN ÚNICO DO BARBEIRO
         id_admin_cadastrado = obter_dados_admin()
 
         if texto_limpo.startswith("admin "):
@@ -192,13 +192,13 @@ async def bot_recebe_mensagem(request: Request):
             if chave_digitada == CHAVE_MESTRE:
                 registrar_admin(chat_id)
                 botoes = gerar_botoes_calendario_admin()
-                enviar_mensagem_com_botoes(chat_id, "✅ **Aparelho Registrado com Sucesso!**\n\nDe agora em diante, você não precisa mais da chave mestra. Basta digitar **admin** para acessar a agenda.\n\n🛠️ **Painel Admin: Calendário**", botoes)
+                enviar_mensagem_com_botoes(chat_id, "✅ **Aparelho Registrado com Sucesso!**\n\nSua permissão foi salva de forma permanente. Basta digitar **admin** para acessar a agenda.\n\n🛠️ **Painel Admin: Calendário**", botoes)
             else:
                 enviar_mensagem_telegram(chat_id, "❌ Chave mestra incorreta.")
             return {"status": "ok"}
             
         elif texto_limpo in ["admin", "painel", "agenda", "gerenciar"]:
-            if str(id_admin_cadastrado) == str(chat_id):
+            if str(id_admin_cadastrado).strip() == str(chat_id).strip():
                 botoes = gerar_botoes_calendario_admin()
                 enviar_mensagem_com_botoes(chat_id, "🛠️ **Painel Admin: Calendário**\nSelecione um dia para configurar os horários:", botoes)
             else:
