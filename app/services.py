@@ -26,7 +26,6 @@ dicionario_nlp = {
 }
 
 def obter_dados_admin():
-    # 1. Tenta ler do arquivo físico (À prova de falhas do servidor)
     try:
         if os.path.exists("admin_id.txt"):
             with open("admin_id.txt", "r") as f:
@@ -35,7 +34,6 @@ def obter_dados_admin():
                     return conteudo
     except Exception: pass
 
-    # 2. Tenta ler do banco de dados (Backup)
     try:
         resposta = supabase.table("configuracoes").select("admin_chat_id").eq("id", 1).execute()
         if resposta.data and len(resposta.data) > 0 and resposta.data[0].get("admin_chat_id"):
@@ -45,14 +43,12 @@ def obter_dados_admin():
     return None
 
 def registrar_admin(chat_id: int):
-    # 1. Salva em um arquivo físico local (Isso não apaga quando o processo muda)
     try:
         with open("admin_id.txt", "w") as f:
             f.write(str(chat_id))
     except Exception as e: 
         print("Erro Arquivo:", e)
 
-    # 2. Salva no banco de dados com UPSERT (força a inserção ou atualização)
     try:
         supabase.table("configuracoes").upsert({"id": 1, "admin_chat_id": chat_id}).execute()
         return True
@@ -131,14 +127,11 @@ def obter_configuracoes():
     except Exception: pass
     return {"gastos_fixos": 1500.0, "custo_aluguel": 800.0, "custo_produtos": 700.0}
 
-def atualizar_custos_da_loja(novo_aluguel: float, novos_produtos: float):
-    novo_total = novo_aluguel + novos_produtos
+def atualizar_despesa(coluna: str, valor: float):
     try:
-        supabase.table("configuracoes").update({
-            "custo_aluguel": novo_aluguel, "custo_produtos": novos_produtos, "gastos_fixos": novo_total
-        }).eq("id", 1).execute()
-        return novo_total
-    except Exception: return 0
+        supabase.table("configuracoes").update({coluna: valor}).eq("id", 1).execute()
+        return True
+    except Exception: return False
 
 def atualizar_preco_servico_db(nome_servico: str, novo_valor: float):
     try:
@@ -344,3 +337,31 @@ def atualizar_status_agendamento(id_marcacao: int, novo_status: str):
         supabase.table("marcacoes").update({"status": novo_status}).eq("id", id_marcacao).execute()
         return True
     except Exception: return False
+
+def gerar_dashboard():
+    config = obter_configuracoes()
+    gastos_fixos = config.get("gastos_fixos", 0)
+    custo_produtos = config.get("custo_produtos", 0)
+    despesas_totais = gastos_fixos + custo_produtos
+
+    try:
+        resposta = supabase.table("marcacoes").select("data, valor").eq("status", "Concluído").execute()
+        marcacoes = resposta.data or []
+        
+        total_ganho = sum(item["valor"] for item in marcacoes)
+        lucro = total_ganho - despesas_totais
+
+        hoje = datetime.utcnow() - timedelta(hours=3)
+        inicio_semana = hoje - timedelta(days=hoje.weekday())
+        str_inicio_semana = inicio_semana.strftime("%Y-%m-%d")
+
+        faturamento_semana = sum(item["valor"] for item in marcacoes if item["data"] >= str_inicio_semana)
+
+        return {
+            "faturamento_bruto": total_ganho,
+            "faturamento_semana": faturamento_semana,
+            "gastos_fixos": gastos_fixos,
+            "custo_produtos": custo_produtos,
+            "lucro_liquido_real": lucro
+        }
+    except Exception: return None

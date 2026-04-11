@@ -11,7 +11,7 @@ from app.services import (
     obter_duracao_servico, obter_slots_livres,
     obter_grade_horarios_admin, alternar_bloqueio_horario,
     obter_detalhes_agendamento, atualizar_status_agendamento,
-    obter_dados_admin, registrar_admin
+    obter_dados_admin, registrar_admin, gerar_dashboard, atualizar_despesa
 )
 
 # ==========================================
@@ -43,8 +43,14 @@ def editar_mensagem_com_botoes(chat_id: int, message_id: int, texto: str, botoes
     except Exception: pass
 
 # ==========================================
-# GERAÇÃO DO PAINEL ADMIN (CALENDÁRIO)
+# GERAÇÃO DO PAINEL ADMIN
 # ==========================================
+def gerar_menu_principal_admin():
+    return [
+        [{"text": "📅 Gerenciar Agenda", "callback_data": "ADM|CALENDARIO"}],
+        [{"text": "💰 Painel Financeiro", "callback_data": "ADM|DASH"}]
+    ]
+
 def gerar_botoes_calendario_admin():
     hoje = datetime.utcnow() - timedelta(hours=3)
     ano, mes = hoje.year, hoje.month
@@ -61,6 +67,7 @@ def gerar_botoes_calendario_admin():
             if dia == 0: linha.append({"text": " ", "callback_data": "IGNORE"})
             else: linha.append({"text": str(dia), "callback_data": f"ADM|DIA|{ano}-{mes:02d}-{dia:02d}"})
         botoes.append(linha)
+    botoes.append([{"text": "⬅️ Voltar ao Menu", "callback_data": "ADM|MENU"}])
     return botoes
 
 def gerar_botoes_horarios_admin(data_iso: str):
@@ -73,7 +80,7 @@ def gerar_botoes_horarios_admin(data_iso: str):
         linha.append({"text": f"{icone} {item['hora']}", "callback_data": f"ADM|CLICK|{data_iso}|{item['hora']}"})
         if len(linha) == 3: botoes.append(linha); linha = []
     if linha: botoes.append(linha)
-    botoes.append([{"text": "⬅️ Voltar ao Calendário", "callback_data": "ADM|VOLTAR"}])
+    botoes.append([{"text": "⬅️ Voltar ao Calendário", "callback_data": "ADM|CALENDARIO"}])
     return botoes
 
 # ==========================================
@@ -92,15 +99,37 @@ async def bot_recebe_mensagem(request: Request):
             dados_clique = query["data"]
             nome_cliente = query["from"]["first_name"]
 
-            # TRAVA DE SEGURANÇA (Arquivo de Texto e Supabase)
             if dados_clique.startswith("ADM|"):
                 id_admin_cadastrado = obter_dados_admin()
                 if str(id_admin_cadastrado).strip() != str(chat_id).strip():
                     enviar_mensagem_telegram(chat_id, "⛔ Acesso negado. Apenas o dispositivo do dono pode realizar esta ação.")
                     return {"status": "ok"}
 
-            if dados_clique == "ADM|VOLTAR":
-                editar_mensagem_com_botoes(chat_id, message_id, "🛠️ **Painel Admin: Calendário**\nSelecione um dia para configurar:", gerar_botoes_calendario_admin())
+            if dados_clique == "ADM|MENU":
+                editar_mensagem_com_botoes(chat_id, message_id, "🛠️ **Painel de Controle do Barbeiro**\nO que você deseja fazer?", gerar_menu_principal_admin())
+
+            elif dados_clique == "ADM|CALENDARIO":
+                editar_mensagem_com_botoes(chat_id, message_id, "📅 **Calendário da Barbearia**\nSelecione um dia para visualizar os horários:", gerar_botoes_calendario_admin())
+
+            elif dados_clique == "ADM|DASH":
+                dash = gerar_dashboard()
+                if dash:
+                    texto = (
+                        "💰 **Painel Financeiro**\n\n"
+                        f"🔹 **Faturamento Total:** R$ {dash['faturamento_bruto']:.2f}\n"
+                        f"📅 **Faturamento (Esta Semana):** R$ {dash['faturamento_semana']:.2f}\n"
+                        "---------------------------\n"
+                        f"🏠 **Gastos Fixos (Mês):** R$ {dash['gastos_fixos']:.2f}\n"
+                        f"🧴 **Gasto c/ Produtos:** R$ {dash['custo_produtos']:.2f}\n"
+                        "---------------------------\n"
+                        f"💎 **LUCRO LÍQUIDO:** R$ {dash['lucro_liquido_real']:.2f}\n\n"
+                        "💡 _Para alterar seus custos, basta me enviar uma mensagem normal de texto assim:_\n"
+                        "`custo fixo 1500`\n"
+                        "`custo produto 300`"
+                    )
+                else:
+                    texto = "💰 **Painel Financeiro**\nNão há dados suficientes ainda."
+                editar_mensagem_com_botoes(chat_id, message_id, texto, [[{"text": "⬅️ Voltar ao Menu", "callback_data": "ADM|MENU"}]])
 
             elif dados_clique.startswith("ADM|DIA|"):
                 data_iso = dados_clique.split("|")[2]
@@ -134,13 +163,12 @@ async def bot_recebe_mensagem(request: Request):
                 atualizar_status_agendamento(int(id_marcacao), "Cancelada")
                 editar_mensagem_com_botoes(chat_id, message_id, "❌ Agendamento cancelado.", [[{"text": "⬅️ Voltar para Agenda", "callback_data": f"ADM|DIA|{data_iso}"}]])
 
-            # FLUXO DO CLIENTE
+            # FLUXO DO CLIENTE (Não alterado)
             elif dados_clique.startswith("S|"):
                 servico = dados_clique.split("|")[1]
                 duracao = obter_duracao_servico(servico)
                 botoes_dias, hoje = [], datetime.utcnow() - timedelta(hours=3)
                 dias_adicionados, deslocamento = 0, 0
-                
                 while dias_adicionados < 5:
                     data_calc = hoje + timedelta(days=deslocamento)
                     data_iso = data_calc.strftime("%Y-%m-%d")
@@ -152,14 +180,12 @@ async def bot_recebe_mensagem(request: Request):
                         dias_adicionados += 1
                     deslocamento += 1
                     if deslocamento > 30: break
-                
                 if not botoes_dias: enviar_mensagem_telegram(chat_id, "Puxa, a agenda está lotada. Tente novamente outro dia!")
                 else: enviar_mensagem_com_botoes(chat_id, f"📅 Para qual dia você quer o {servico}?", botoes_dias)
 
             elif dados_clique.startswith("D|"):
                 _, servico, data_iso = dados_clique.split("|")
                 horarios_livres = obter_slots_livres(data_iso, obter_duracao_servico(servico))
-                
                 if not horarios_livres: enviar_mensagem_telegram(chat_id, "Puxa, os horários esgotaram. Escolha outra data!")
                 else:
                     botoes_horas, linha = [], []
@@ -184,23 +210,38 @@ async def bot_recebe_mensagem(request: Request):
         nome_cliente = dados["message"]["chat"].get("first_name", "Cliente")
         texto_limpo = limpar_mensagem(texto_cru)
         
-        # SISTEMA DE LOGIN ÚNICO DO BARBEIRO
         id_admin_cadastrado = obter_dados_admin()
+
+        # ATUALIZAÇÃO DE GASTOS PELO BARBEIRO
+        if texto_limpo.startswith("custo fixo ") or texto_limpo.startswith("custo produto "):
+            if str(id_admin_cadastrado).strip() == str(chat_id).strip():
+                try:
+                    is_fixo = texto_limpo.startswith("custo fixo ")
+                    texto_valor = texto_limpo.split("custo fixo ")[1] if is_fixo else texto_limpo.split("custo produto ")[1]
+                    valor_float = float(texto_valor.replace(",", ".").strip())
+                    
+                    if is_fixo:
+                        atualizar_despesa("gastos_fixos", valor_float)
+                        enviar_mensagem_telegram(chat_id, f"✅ Gasto Fixo Mensal atualizado para R$ {valor_float:.2f}")
+                    else:
+                        atualizar_despesa("custo_produtos", valor_float)
+                        enviar_mensagem_telegram(chat_id, f"✅ Gasto com Produtos atualizado para R$ {valor_float:.2f}")
+                except Exception:
+                    enviar_mensagem_telegram(chat_id, "❌ Erro ao ler o valor. Use o formato numérico correto. Ex: custo fixo 1500.50")
+            return {"status": "ok"}
 
         if texto_limpo.startswith("admin "):
             chave_digitada = texto_limpo.split("admin ")[1].strip()
             if chave_digitada == CHAVE_MESTRE:
                 registrar_admin(chat_id)
-                botoes = gerar_botoes_calendario_admin()
-                enviar_mensagem_com_botoes(chat_id, "✅ **Aparelho Registrado com Sucesso!**\n\nSua permissão foi salva de forma permanente. Basta digitar **admin** para acessar a agenda.\n\n🛠️ **Painel Admin: Calendário**", botoes)
+                enviar_mensagem_com_botoes(chat_id, "✅ **Aparelho Registrado com Sucesso!**\n\nSua permissão foi salva. Basta digitar **admin** para acessar a agenda e as finanças.\n\n🛠️ **Painel de Controle**", gerar_menu_principal_admin())
             else:
                 enviar_mensagem_telegram(chat_id, "❌ Chave mestra incorreta.")
             return {"status": "ok"}
             
         elif texto_limpo in ["admin", "painel", "agenda", "gerenciar"]:
             if str(id_admin_cadastrado).strip() == str(chat_id).strip():
-                botoes = gerar_botoes_calendario_admin()
-                enviar_mensagem_com_botoes(chat_id, "🛠️ **Painel Admin: Calendário**\nSelecione um dia para configurar os horários:", botoes)
+                enviar_mensagem_com_botoes(chat_id, "🛠️ **Painel de Controle do Barbeiro**\nO que você deseja fazer?", gerar_menu_principal_admin())
             else:
                 enviar_mensagem_telegram(chat_id, "🔒 Área restrita. Se você é o dono, digite 'admin SUA_CHAVE_MESTRA' para registrar o aparelho.")
             return {"status": "ok"}
