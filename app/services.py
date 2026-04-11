@@ -365,3 +365,17 @@ def gerar_dashboard():
             "lucro_liquido_real": lucro
         }
     except Exception: return None
+def buscar_agendamento_pendente_do_dia(chat_id_cliente: int):
+    try:
+        hoje = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
+        resposta = supabase.table("marcacoes").select("*").eq("data", hoje).eq("status", "Pendente").execute()
+        return resposta.data if resposta.data else []
+    except Exception:
+        return []
+
+def fazer_checkin_por_id(id_agendamento: int):
+    try:
+        supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_agendamento).execute()
+        return True
+    except Exception:
+        return False

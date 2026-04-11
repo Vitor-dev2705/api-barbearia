@@ -163,12 +163,13 @@ async def bot_recebe_mensagem(request: Request):
                 atualizar_status_agendamento(int(id_marcacao), "Cancelada")
                 editar_mensagem_com_botoes(chat_id, message_id, "❌ Agendamento cancelado.", [[{"text": "⬅️ Voltar para Agenda", "callback_data": f"ADM|DIA|{data_iso}"}]])
 
-            # FLUXO DO CLIENTE (Não alterado)
+            # FLUXO DO CLIENTE
             elif dados_clique.startswith("S|"):
                 servico = dados_clique.split("|")[1]
                 duracao = obter_duracao_servico(servico)
                 botoes_dias, hoje = [], datetime.utcnow() - timedelta(hours=3)
                 dias_adicionados, deslocamento = 0, 0
+                
                 while dias_adicionados < 5:
                     data_calc = hoje + timedelta(days=deslocamento)
                     data_iso = data_calc.strftime("%Y-%m-%d")
@@ -180,12 +181,14 @@ async def bot_recebe_mensagem(request: Request):
                         dias_adicionados += 1
                     deslocamento += 1
                     if deslocamento > 30: break
+                
                 if not botoes_dias: enviar_mensagem_telegram(chat_id, "Puxa, a agenda está lotada. Tente novamente outro dia!")
                 else: enviar_mensagem_com_botoes(chat_id, f"📅 Para qual dia você quer o {servico}?", botoes_dias)
 
             elif dados_clique.startswith("D|"):
                 _, servico, data_iso = dados_clique.split("|")
                 horarios_livres = obter_slots_livres(data_iso, obter_duracao_servico(servico))
+                
                 if not horarios_livres: enviar_mensagem_telegram(chat_id, "Puxa, os horários esgotaram. Escolha outra data!")
                 else:
                     botoes_horas, linha = [], []
@@ -288,7 +291,8 @@ async def bot_recebe_mensagem(request: Request):
         enviar_mensagem_telegram(chat_id, resposta)
         return {"status": "ok"}
 
-    except Exception:
+    except Exception as e:
+        print("Erro na Rota:", e)
         return {"status": "erro"}
 
 @router.get("/painel", response_class=HTMLResponse)
