@@ -280,25 +280,70 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
         return "Horário indisponível."
 
 # ==========================================
-# PAINEL DO BARBEIRO (ADMINISTRAÇÃO VIA API)
+# PAINEL DO BARBEIRO (ADMINISTRAÇÃO DE CALENDÁRIO)
 # ==========================================
-def obter_expediente_completo():
+def obter_grade_horarios_admin(data_iso: str):
     try:
-        resposta = supabase.table("expediente").select("*").order("dia_semana").execute()
-        return resposta.data if resposta.data else []
+        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
+        dia_semana = data_obj.weekday()
+        
+        try:
+            exp = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
+            dados_exp = exp.data[0] if exp.data else None
+        except: dados_exp = None
+        
+        str_ab = str(dados_exp.get('hora_abertura', '09:00'))[:5] if dados_exp else "09:00"
+        str_fe = str(dados_exp.get('hora_fechamento', '18:00'))[:5] if dados_exp else "18:00"
+        
+        hr_abertura = datetime.strptime(str_ab, "%H:%M")
+        hr_fechamento = datetime.strptime(str_fe, "%H:%M")
+        
+        marcacoes = supabase.table("marcacoes").select("*").eq("data", data_iso).neq("status", "Cancelada").execute()
+        lista_marcacoes = marcacoes.data or []
+        
+        mapa_ocupados = {}
+        for m in lista_marcacoes:
+            inicio = datetime.strptime(str(m.get('hora', '00:00'))[:5].strip(), "%H:%M")
+            duracao = 30 if m.get("servico") == "Bloqueio" else int(obter_duracao_servico(m.get("servico", "")))
+            qtd_slots = duracao // 30
+            
+            estado = "bloqueado" if m.get("status") == "Bloqueado" else "cliente"
+            
+            for i in range(max(1, qtd_slots)):
+                h_str = (inicio + timedelta(minutes=30*i)).strftime("%H:%M")
+                mapa_ocupados[h_str] = estado
+                
+        grade = []
+        atual = hr_abertura
+        while atual < hr_fechamento:
+            h_str = atual.strftime("%H:%M")
+            grade.append({"hora": h_str, "estado": mapa_ocupados.get(h_str, "livre")})
+            atual += timedelta(minutes=30)
+            
+        return grade
     except Exception:
         return []
 
-def alternar_dia_expediente(dia_semana: int):
+def alternar_bloqueio_horario(data_iso: str, hora: str):
     try:
-        atual = supabase.table("expediente").select("aberto").eq("dia_semana", dia_semana).execute()
-        if atual.data:
-            novo_status = not atual.data[0]["aberto"]
-            supabase.table("expediente").update({"aberto": novo_status}).eq("dia_semana", dia_semana).execute()
-            return novo_status
+        resposta = supabase.table("marcacoes").select("*").eq("data", data_iso).eq("hora", hora).neq("status", "Cancelada").execute()
+        
+        if not resposta.data:
+            novo_dado = {
+                "cliente": "ADMIN", "servico": "Bloqueio", "data": data_iso,
+                "hora": hora, "valor": 0.0, "status": "Bloqueado"
+            }
+            supabase.table("marcacoes").insert(novo_dado).execute()
+            return "Bloqueado"
+        else:
+            marcacao = resposta.data[0]
+            if marcacao.get("status") == "Bloqueado":
+                supabase.table("marcacoes").delete().eq("id", marcacao["id"]).execute()
+                return "Desbloqueado"
+            else:
+                return "Ocupado_Cliente"
     except Exception:
-        pass
-    return False
+        return "Erro"
 
 # ==========================================
 # OPERAÇÕES DE CAIXA E DASHBOARD
@@ -306,30 +351,24 @@ def alternar_dia_expediente(dia_semana: int):
 def realizar_checkin(nome_cliente: str):
     try:
         resposta = supabase.table("marcacoes").select("id").ilike("cliente", nome_cliente).eq("status", "Pendente").order("id", desc=True).execute()
-        
         if resposta.data:
             id_marcacao = resposta.data[0]["id"]
             supabase.table("marcacoes").update({"status": "Concluído"}).eq("id", id_marcacao).execute()
             return True
-    except Exception: 
-        pass
+    except Exception: pass
     return False
 
 def gerar_dashboard():
     config = obter_configuracoes()
     gastos_fixos = config.get("gastos_fixos", 0)
-    
     try:
         resposta = supabase.table("marcacoes").select("valor").eq("status", "Concluído").execute()
         total_ganho = sum(item["valor"] for item in resposta.data)
         lucro = total_ganho - gastos_fixos
         
-        if lucro > 500: 
-            dica = "Excelente mês! Considere investir em novos equipamentos."
-        elif lucro >= 0: 
-            dica = "Contas pagas, mas a margem está apertada."
-        else: 
-            dica = "Atenção: O lucro está negativo."
+        if lucro > 500: dica = "Excelente mês! Considere investir em novos equipamentos."
+        elif lucro >= 0: dica = "Contas pagas, mas a margem está apertada."
+        else: dica = "Atenção: O lucro está negativo."
         
         return {
             "cortes_concluidos": len(resposta.data),
