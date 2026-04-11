@@ -61,7 +61,7 @@ def registrar_admin(chat_id: int):
 # ==========================================
 def processar_texto_com_ia(texto_cliente: str):
     hoje = datetime.utcnow() - timedelta(hours=3)
-    data_hoje_str = hoje.strftime("%Y-%m-%d")
+    data_hoje_str = hoje.strftime("%d-%m-%Y")
     dia_semana_hoje = hoje.strftime("%A")
 
     try:
@@ -85,7 +85,7 @@ def processar_texto_com_ia(texto_cliente: str):
         - Converta "13 h", "13h", "às 13" ou "uma da tarde" para "13:00".
         - Se não achar horário, retorne null.
         
-        Responda APENAS um JSON plano: {{"data": "YYYY-MM-DD", "hora": "HH:MM", "servico": "nome"}}
+        Responda APENAS um JSON plano: {{"data": "DD-MM-YYYY", "hora": "HH:MM", "servico": "nome"}}
         """
         
         response = client.models.generate_content(
@@ -275,42 +275,28 @@ def agendar_servico(cliente: str, servico: str, data_iso: str, hora: str, valor:
 # ==========================================
 def obter_grade_horarios_admin(data_iso: str):
     try:
-        data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
-        dia_semana = data_obj.weekday()
-        
-        try:
-            exp = supabase.table("expediente").select("*").eq("dia_semana", dia_semana).execute()
-            dados_exp = exp.data[0] if exp.data else None
-        except: dados_exp = None
-        
-        str_ab = str(dados_exp.get('hora_abertura', '09:00'))[:5] if dados_exp else "09:00"
-        str_fe = str(dados_exp.get('hora_fechamento', '18:00'))[:5] if dados_exp else "18:00"
-        
-        hr_abertura = datetime.strptime(str_ab, "%H:%M")
-        hr_fechamento = datetime.strptime(str_fe, "%H:%M")
-        
+        hr_ab, hr_fe = datetime.strptime("09:00", "%H:%M"), datetime.strptime("18:00", "%H:%M")
         marcacoes = supabase.table("marcacoes").select("*").eq("data", data_iso).neq("status", "Cancelada").execute()
-        lista_marcacoes = marcacoes.data or []
         
+        # MAPEAMENTO DE CORES/STATUS:
+        # Pendente = cliente (vermelho) | Bloqueado = bloqueado (X) | Concluído = concluido (azul)
         mapa_ocupados = {}
-        for m in lista_marcacoes:
-            inicio = datetime.strptime(str(m.get('hora', '00:00'))[:5].strip(), "%H:%M")
-            duracao = 30 if m.get("servico") == "Bloqueio" else int(obter_duracao_servico(m.get("servico", "")))
-            qtd_slots = max(1, duracao // 30)
-            estado = "bloqueado" if m.get("status") == "Bloqueado" else "cliente"
-            for i in range(qtd_slots):
-                h_str = (inicio + timedelta(minutes=30*i)).strftime("%H:%M")
-                mapa_ocupados[h_str] = estado
+        for m in marcacoes.data:
+            hora_str = str(m['hora'])[:5]
+            if m['status'] == "Bloqueado":
+                mapa_ocupados[hora_str] = "bloqueado"
+            elif m['status'] == "Concluído":
+                mapa_ocupados[hora_str] = "concluido"
+            else:
+                mapa_ocupados[hora_str] = "cliente"
                 
-        grade = []
-        atual = hr_abertura
-        while atual < hr_fechamento:
+        grade, atual = [], hr_ab
+        while atual < hr_fe:
             h_str = atual.strftime("%H:%M")
             grade.append({"hora": h_str, "estado": mapa_ocupados.get(h_str, "livre")})
             atual += timedelta(minutes=30)
         return grade
     except Exception: return []
-
 def alternar_bloqueio_horario(data_iso: str, hora: str):
     try:
         resposta = supabase.table("marcacoes").select("*").eq("data", data_iso).eq("hora", hora).neq("status", "Cancelada").execute()
