@@ -28,14 +28,19 @@ dicionario_nlp = {
 def obter_dados_admin():
     try:
         resposta = supabase.table("configuracoes").select("admin_chat_id").eq("id", 1).execute()
-        if resposta.data:
-            return resposta.data[0].get("admin_chat_id")
+        if resposta.data and resposta.data[0].get("admin_chat_id"):
+            return str(resposta.data[0]["admin_chat_id"])
     except Exception: pass
     return None
 
 def registrar_admin(chat_id: int):
     try:
-        supabase.table("configuracoes").update({"admin_chat_id": chat_id}).eq("id", 1).execute()
+        # Verifica se a linha 1 existe. Se não existir, cria. Se existir, atualiza.
+        res = supabase.table("configuracoes").select("id").eq("id", 1).execute()
+        if not res.data:
+            supabase.table("configuracoes").insert({"id": 1, "admin_chat_id": chat_id}).execute()
+        else:
+            supabase.table("configuracoes").update({"admin_chat_id": chat_id}).eq("id", 1).execute()
         return True
     except Exception: return False
 
