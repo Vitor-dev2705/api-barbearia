@@ -96,7 +96,6 @@ def obter_servicos_db():
 
 def salvar_servico_db(nome: str, preco: float, duracao: int = 30):
     try:
-        # Upsert: se o nome existir, atualiza preço/duração. Se não, cria.
         supabase.table("servicos").upsert({
             "nome": nome.strip().title(),
             "preco": preco,
@@ -117,6 +116,9 @@ def obter_dados_servico_por_nome(nome_servico: str):
         return res.data[0] if res.data else None
     except Exception: return None
 
+# ==========================================
+# LÓGICA DE AGENDAMENTO E EXPEDIENTE
+# ==========================================
 # ==========================================
 # LÓGICA DE AGENDAMENTO E EXPEDIENTE
 # ==========================================
@@ -141,13 +143,12 @@ def obter_slots_livres(data_iso: str, duracao: int):
         marcacoes = supabase.table("marcacoes").select("hora, servico").eq("data", data_iso).neq("status", "Cancelada").execute()
         ocupados = []
         for m in (marcacoes.data or []):
-            try:
-                inicio = datetime.strptime(str(m['hora'])[:5].strip(), "%H:%M")
-                fim = inicio + timedelta(minutes=obter_duracao_servico(m['servico']))
-                ocupados.append((inicio, fim))
-            except Exception: continue
+            inicio = datetime.strptime(str(m['hora'])[:5].strip(), "%H:%M")
+            fim = inicio + timedelta(minutes=obter_duracao_servico(m['servico']))
+            ocupados.append((inicio, fim))
 
-        slots, atual = [], hr_abertura
+        slots_reais = []
+        atual = hr_abertura
         fuso_br = datetime.utcnow() - timedelta(hours=3)
         while atual + timedelta(minutes=duracao) <= hr_fechamento:
             if not (data_iso == fuso_br.strftime("%Y-%m-%d") and atual.time() <= fuso_br.time()):
@@ -156,23 +157,51 @@ def obter_slots_livres(data_iso: str, duracao: int):
                     if atual < o_fim and (atual + timedelta(minutes=duracao)) > o_ini:
                         conflito = True
                         break
-                if not conflito: slots.append(atual.strftime("%H:%M"))
+                if not conflito: slots_reais.append(atual)
             atual += timedelta(minutes=30)
-        return slots
+        
+        if not slots_reais: return []
+
+        # --- LÓGICA DE CASCATA (ANTI-BURACO) ---
+        if not marcacoes.data:
+            # Se dia vazio, sugere início do turno da manhã (09:00) ou tarde (13:00)
+            ancoras = [hr_abertura.strftime("%H:%M"), (hr_abertura + timedelta(minutes=30)).strftime("%H:%M"), "13:00", "13:30"]
+            return [s.strftime("%H:%M") for s in slots_reais if s.strftime("%H:%M") in ancoras]
+
+        vizinhos = []
+        for s in slots_reais:
+            for o_ini, o_fim in ocupados:
+                # Sugere horários colados (vizinhos) a agendamentos existentes
+                if s == o_fim or (s + timedelta(minutes=duracao)) == o_ini:
+                    vizinhos.append(s.strftime("%H:%M"))
+                    break
+        
+        return sorted(list(set(vizinhos))) if vizinhos else [s.strftime("%H:%M") for s in slots_reais[:4]]
+
     except Exception: return []
 
-def agendar_servico(cliente: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
+def agendar_servico(nome_completo: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
     try:
+        # TRAVA: Verifica se este chat_id já agendou hoje
+        check = supabase.table("marcacoes").select("id").eq("data", data_iso).eq("chat_id", chat_id).neq("status", "Cancelada").execute()
+        if check.data:
+            return "⚠️ Você já possui um agendamento para este dia! Fale com o barbeiro para alterar."
+
         servico = obter_dados_servico_por_nome(servico_nome)
         if not servico: return "❌ Erro: Serviço não encontrado."
 
         novo_agendamento = {
-            "cliente": cliente, "servico": servico['nome'], "data": data_iso,
-            "hora": hora, "valor": servico['preco'], "status": "Pendente", "chat_id": chat_id
+            "cliente": nome_completo.strip().title(), 
+            "servico": servico['nome'], 
+            "data": data_iso,
+            "hora": hora, 
+            "valor": servico['preco'], 
+            "status": "Pendente", 
+            "chat_id": chat_id
         }
         supabase.table("marcacoes").insert(novo_agendamento).execute()
         data_br = datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
-        return f"✅ Agendado: {servico['nome']}\n💰 Valor: R$ {servico['preco']:.2f}\n📅 Data: {data_br} às {hora}."
+        return f"✅ **Confirmado!**\n\n👤 {nome_completo.title()}\n✂️ {servico['nome']}\n💰 R$ {servico['preco']:.2f}\n📅 {data_br} às {hora}"
     except Exception: return "❌ Erro ao salvar agendamento."
 
 # ==========================================
