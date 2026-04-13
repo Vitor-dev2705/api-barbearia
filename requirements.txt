@@ -6,4 +6,3 @@ supabase
 python-dotenv
 google-genai
 jinja2
-request
