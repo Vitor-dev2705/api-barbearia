@@ -26,21 +26,22 @@
             <div class="bg-gray-800 p-6 rounded-2xl border border-gray-700 shadow-xl border-l-4 border-l-green-500">
                 <p class="text-gray-400 text-sm font-semibold uppercase tracking-wider">Ganhos da Semana</p>
                 <h2 class="text-3xl font-extrabold text-white mt-2">
-                    R$ {{ (dash.faturamento_semana if dash.faturamento_semana else 0.0) | shadow_format }}
+                    R$ {{ dash.faturamento_semana | default(0.0) | shadow_format }}
                 </h2>
             </div>
+
             <div class="bg-gray-800 p-6 rounded-2xl border border-gray-700 shadow-xl border-l-4 border-l-blue-500">
                 <p class="text-gray-400 text-sm font-semibold uppercase tracking-wider">Lucro Líquido Real</p>
                 <h2 class="text-3xl font-extrabold text-white mt-2">
-                    R$ {{ (dash.lucro_liquido_real if dash.lucro_liquido_real else 0.0) | shadow_format }}
+                    R$ {{ dash.lucro_liquido_real | default(0.0) | shadow_format }}
                 </h2>
             </div>
+
             <div class="bg-gray-800 p-6 rounded-2xl border border-gray-700 shadow-xl border-l-4 border-l-red-500">
                 <p class="text-gray-400 text-sm font-semibold uppercase tracking-wider">Despesas Totais</p>
                 <h2 class="text-3xl font-extrabold text-white mt-2">
-                    {# Cálculo seguro das despesas dentro do HTML #}
-                    {% set fixo = dash.gastos_fixos if dash.gastos_fixos else 0.0 %}
-                    {% set prod = dash.custo_produtos if dash.custo_produtos else 0.0 %}
+                    {% set fixo = dash.gastos_fixos | default(0.0) %}
+                    {% set prod = dash.custo_produtos | default(0.0) %}
                     R$ {{ (fixo + prod) | shadow_format }}
                 </h2>
             </div>
@@ -65,7 +66,9 @@
                     <tbody class="divide-y divide-gray-700">
                         {% for item in agenda %}
                         <tr class="hover:bg-gray-700/30 transition-colors">
-                            <td class="p-4 font-mono text-yellow-500 font-bold">{{ item.hora[:5] }}</td>
+                            <td class="p-4 font-mono text-yellow-500 font-bold">
+                                {{ item.hora | string | truncate(5, True, '') }}
+                            </td>
                             <td class="p-4">
                                 <p class="font-bold text-white">{{ item.cliente }}</p>
                             </td>
