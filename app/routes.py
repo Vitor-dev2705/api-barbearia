@@ -5,6 +5,7 @@ import calendar
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from app.services import (
     limpar_mensagem, agendar_servico, processar_texto_com_ia,
@@ -14,8 +15,23 @@ from app.services import (
     obter_dados_admin, registrar_admin, gerar_dashboard, 
     atualizar_despesa, buscar_agendamento_pendente_do_dia, 
     fazer_checkin_por_id, verificar_clientes_para_lembrete,
-    obter_servicos_db, salvar_servico_db, deletar_servico_db, obter_dados_servico_por_nome
+    obter_servicos_db, salvar_servico_db, deletar_servico_db, 
+    obter_dados_servico_por_nome, supabase 
 )
+
+# ==========================================
+# CONFIGURAÇÃO DE TEMPLATES E FILTROS
+# ==========================================
+templates = Jinja2Templates(directory="templates")
+
+def shadow_format(value):
+    """ Filtro para transformar 1000.0 em R$ 1.000,00 no HTML """
+    try:
+        return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return "0,00"
+
+templates.env.filters["shadow_format"] = shadow_format
 
 # ==========================================
 # CONFIGURAÇÕES E SEGURANÇA
@@ -46,7 +62,7 @@ def editar_mensagem_com_botoes(chat_id: int, message_id: int, texto: str, botoes
     except Exception: pass
 
 # ==========================================
-# GERAÇÃO DO PAINEL ADMIN (MENU E GESTÃO)
+# GERAÇÃO DO PAINEL ADMIN (BOT TELEGRAM)
 # ==========================================
 def gerar_menu_principal_admin():
     return [
@@ -100,7 +116,7 @@ async def bot_recebe_mensagem(request: Request):
             query = dados["callback_query"]; chat_id = query["message"]["chat"]["id"]
             msg_id = query["message"]["message_id"]; dados_clique = query["data"]
             
-            # Captura nome e sobrenome
+            # Captura nome e sobrenome automático do Telegram
             f_name = query["from"].get("first_name", "")
             l_name = query["from"].get("last_name", "")
             nome_user_completo = f"{f_name} {l_name}".strip()
@@ -130,15 +146,6 @@ async def bot_recebe_mensagem(request: Request):
                     deletar_servico_db(int(id_s))
                     enviar_mensagem_telegram(chat_id, "✅ Serviço removido!")
                     editar_mensagem_com_botoes(chat_id, msg_id, "🛠️ **Painel Admin**", gerar_menu_principal_admin())
-                elif dados_clique == "ADM|AVISO":
-                    clientes = verificar_clientes_para_lembrete()
-                    if not clientes: 
-                        enviar_mensagem_telegram(chat_id, "✅ Nenhum cliente para avisar hoje.")
-                    else:
-                        for clie in clientes:
-                            msg = f"Olá {clie['cliente']}! 👋 Já faz 20 dias do seu último corte. A agenda está aberta!"
-                            enviar_mensagem_com_botoes(clie['chat_id'], msg, [[{"text": "✂️ Agendar", "callback_data": "MENU"}]])
-                        enviar_mensagem_telegram(chat_id, f"📩 {len(clientes)} Lembrete(s) enviado(s)!")
                 elif dados_clique == "ADM|DASH":
                     d = gerar_dashboard()
                     txt = f"💰 **Financeiro**\n\n🔹 **Semana:** R$ {d['faturamento_semana']:.2f}\n🔹 **Total:** R$ {d['faturamento_bruto']:.2f}\n---------------------------\n💎 **LUCRO:** R$ {d['lucro_liquido_real']:.2f}"
@@ -154,7 +161,7 @@ async def bot_recebe_mensagem(request: Request):
                         btns = []
                         if det["status"] == "Pendente": 
                             btns.append([{"text": "✅ Check-in", "callback_data": f"ADM|DONE|{det['id']}|{dt}"}])
-                        btns.append([{"text": "🗑️ Cancelar", "callback_data": f"ADM|CANCEL|{det['id']}|{dt}"}])
+                        btns.append([{"text": "🗑️ Cancelar Agendamento", "callback_data": f"ADM|CANCEL|{det['id']}|{dt}"}])
                         btns.append([{"text": "⬅️ Voltar", "callback_data": f"ADM|DIA|{dt}"}])
                         editar_mensagem_com_botoes(chat_id, msg_id, txt, btns)
                     else:
@@ -171,9 +178,6 @@ async def bot_recebe_mensagem(request: Request):
                 servs = obter_servicos_db()
                 btns = [[{"text": f"✂️ {s['nome']} - R$ {s['preco']:.2f}", "callback_data": f"S|{s['nome']}"}] for s in servs]
                 enviar_mensagem_com_botoes(chat_id, "O que deseja agendar?", btns)
-            elif dados_clique.startswith("CLIENTE|CHECKIN|"):
-                id_agend = dados_clique.split("|")[2]; fazer_checkin_por_id(int(id_agend))
-                editar_mensagem_com_botoes(chat_id, msg_id, "✅ **Check-in realizado!**", [])
             elif dados_clique.startswith("S|"):
                 serv_nome = dados_clique.split("|")[1]; dur = obter_duracao_servico(serv_nome); b_dias, hj = [], datetime.utcnow() - timedelta(hours=3)
                 for i in range(7):
@@ -189,7 +193,8 @@ async def bot_recebe_mensagem(request: Request):
                 if lin: b_hrs.append(lin)
                 enviar_mensagem_com_botoes(chat_id, "⏰ Escolha o horário:", b_hrs)
             elif dados_clique.startswith("H|"):
-                _, s, d, h = dados_clique.split("|"); res = agendar_servico(nome_user_completo, s, d, h, chat_id)
+                _, s, d, h = dados_clique.split("|")
+                res = agendar_servico(nome_user_completo, s, d, h, chat_id)
                 enviar_mensagem_telegram(chat_id, res)
             return {"status": "ok"}
 
@@ -217,13 +222,13 @@ async def bot_recebe_mensagem(request: Request):
 
         agendamentos = buscar_agendamento_pendente_do_dia(nome_cliente)
         if agendamentos and texto_cru.lower() not in ["admin", "painel"]:
-            ag = agendamentos[0]; txt = f"Olá! Vi que você tem horário hoje às {str(ag['hora'])[:5]}. Já chegou?"
+            ag = agendamentos[0]; txt = f"Olá! 👋 Vi que tens horário hoje às {str(ag['hora'])[:5]}. Já chegaste?"
             enviar_mensagem_com_botoes(chat_id, txt, [[{"text": "📍 Sim!", "callback_data": f"CLIENTE|CHECKIN|{ag['id']}"}], [{"text": "📅 Menu", "callback_data": "MENU"}]])
             return {"status": "ok"}
 
         servs = obter_servicos_db()
         btns = [[{"text": f"✂️ {s['nome']} - R$ {s['preco']:.2f}", "callback_data": f"S|{s['nome']}"}] for s in servs]
-        enviar_mensagem_com_botoes(chat_id, f"Olá {nome_cliente}! O que deseja agendar?", btns)
+        enviar_mensagem_com_botoes(chat_id, f"Olá {nome_cliente}! O que desejas agendar?", btns)
 
     except Exception as e:
         print(f"Erro na Rota: {e}"); return {"status": "erro"}
@@ -233,4 +238,27 @@ async def bot_recebe_mensagem(request: Request):
 # INTERFACE DO PAINEL WEB (DASHBOARD)
 # ==========================================
 @router.get("/painel", response_class=HTMLResponse)
-def ver_painel(): return "<html><body><h1>Sistema Ativo ✂️</h1></body></html>"
+async def ver_painel_grafico(request: Request):
+    try:
+        hoje_iso = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
+        
+        # 1. Puxa os dados financeiros (já tratados para nunca serem None)
+        dash_data = gerar_dashboard()
+        
+        # 2. Puxa a lista de agendamentos de hoje do Supabase
+        try:
+            res = supabase.table("marcacoes").select("*").eq("data", hoje_iso).neq("status", "Cancelada").order("hora").execute()
+            agenda_dia = res.data if res.data else []
+        except Exception as e:
+            print(f"Erro ao carregar agenda web: {e}")
+            agenda_dia = []
+
+        # 3. Renderiza o HTML passando os dados
+        return templates.TemplateResponse("dashboard.html", {
+            "request": request,
+            "dash": dash_data,
+            "agenda": agenda_dia,
+            "hoje": datetime.now().strftime("%d/%m/%Y")
+        })
+    except Exception as e:
+        return HTMLResponse(content=f"Erro crítico no painel: {e}", status_code=500)

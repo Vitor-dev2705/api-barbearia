@@ -69,7 +69,7 @@ def processar_texto_com_ia(texto_cliente: str):
         Responda APENAS um JSON plano: {{"data": "DD-MM-YYYY", "hora": "HH:MM", "servico": "nome"}}
         """
         
-        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         texto_limpo = response.text.strip()
         if "```json" in texto_limpo:
             texto_limpo = texto_limpo.split("```json")[1].split("```")[0].strip()
@@ -81,6 +81,7 @@ def processar_texto_com_ia(texto_cliente: str):
         return {"data": None, "hora": None, "servico": None}
 
 def limpar_mensagem(mensagem: str):
+    if not mensagem: return ""
     palavras = mensagem.lower().split()
     mensagem_limpa = [dicionario_nlp.get(p, p) for p in palavras]
     return " ".join(mensagem_limpa)
@@ -117,10 +118,7 @@ def obter_dados_servico_por_nome(nome_servico: str):
     except Exception: return None
 
 # ==========================================
-# LÓGICA DE AGENDAMENTO E EXPEDIENTE
-# ==========================================
-# ==========================================
-# LÓGICA DE AGENDAMENTO E EXPEDIENTE
+# LÓGICA DE AGENDAMENTO (CASCATA ANTI-BURACO)
 # ==========================================
 def obter_duracao_servico(nome_servico: str):
     servico = obter_dados_servico_por_nome(nome_servico)
@@ -143,9 +141,11 @@ def obter_slots_livres(data_iso: str, duracao: int):
         marcacoes = supabase.table("marcacoes").select("hora, servico").eq("data", data_iso).neq("status", "Cancelada").execute()
         ocupados = []
         for m in (marcacoes.data or []):
-            inicio = datetime.strptime(str(m['hora'])[:5].strip(), "%H:%M")
-            fim = inicio + timedelta(minutes=obter_duracao_servico(m['servico']))
-            ocupados.append((inicio, fim))
+            try:
+                inicio = datetime.strptime(str(m['hora'])[:5].strip(), "%H:%M")
+                fim = inicio + timedelta(minutes=obter_duracao_servico(m['servico']))
+                ocupados.append((inicio, fim))
+            except Exception: continue
 
         slots_reais = []
         atual = hr_abertura
@@ -162,16 +162,13 @@ def obter_slots_livres(data_iso: str, duracao: int):
         
         if not slots_reais: return []
 
-        # --- LÓGICA DE CASCATA (ANTI-BURACO) ---
         if not marcacoes.data:
-            # Se dia vazio, sugere início do turno da manhã (09:00) ou tarde (13:00)
             ancoras = [hr_abertura.strftime("%H:%M"), (hr_abertura + timedelta(minutes=30)).strftime("%H:%M"), "13:00", "13:30"]
             return [s.strftime("%H:%M") for s in slots_reais if s.strftime("%H:%M") in ancoras]
 
         vizinhos = []
         for s in slots_reais:
             for o_ini, o_fim in ocupados:
-                # Sugere horários colados (vizinhos) a agendamentos existentes
                 if s == o_fim or (s + timedelta(minutes=duracao)) == o_ini:
                     vizinhos.append(s.strftime("%H:%M"))
                     break
@@ -180,28 +177,22 @@ def obter_slots_livres(data_iso: str, duracao: int):
 
     except Exception: return []
 
-def agendar_servico(nome_completo: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
+def agendar_servico(cliente: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
     try:
-        # TRAVA: Verifica se este chat_id já agendou hoje
         check = supabase.table("marcacoes").select("id").eq("data", data_iso).eq("chat_id", chat_id).neq("status", "Cancelada").execute()
         if check.data:
-            return "⚠️ Você já possui um agendamento para este dia! Fale com o barbeiro para alterar."
+            return "⚠️ Você já possui um agendamento para hoje! Fale com o barbeiro para alterar."
 
         servico = obter_dados_servico_por_nome(servico_nome)
         if not servico: return "❌ Erro: Serviço não encontrado."
 
         novo_agendamento = {
-            "cliente": nome_completo.strip().title(), 
-            "servico": servico['nome'], 
-            "data": data_iso,
-            "hora": hora, 
-            "valor": servico['preco'], 
-            "status": "Pendente", 
-            "chat_id": chat_id
+            "cliente": cliente.strip().title(), "servico": servico['nome'], "data": data_iso,
+            "hora": hora, "valor": servico['preco'], "status": "Pendente", "chat_id": chat_id
         }
         supabase.table("marcacoes").insert(novo_agendamento).execute()
         data_br = datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
-        return f"✅ **Confirmado!**\n\n👤 {nome_completo.title()}\n✂️ {servico['nome']}\n💰 R$ {servico['preco']:.2f}\n📅 {data_br} às {hora}"
+        return f"✅ **Confirmado!**\n\n👤 {cliente.title()}\n✂️ {servico['nome']}\n💰 R$ {servico['preco']:.2f}\n📅 {data_br} às {hora}"
     except Exception: return "❌ Erro ao salvar agendamento."
 
 # ==========================================
@@ -280,21 +271,31 @@ def atualizar_despesa(coluna: str, valor: float):
     except Exception: return False
 
 def gerar_dashboard():
-    config = obter_configuracoes()
     try:
+        config = obter_configuracoes()
         res = supabase.table("marcacoes").select("data, valor").eq("status", "Concluído").execute()
         marcacoes = res.data or []
+        
         total_ganho = sum(item["valor"] for item in marcacoes)
         hoje = datetime.utcnow() - timedelta(hours=3)
         segunda = (hoje - timedelta(days=hoje.weekday())).strftime("%Y-%m-%d")
         faturamento_semana = sum(item["valor"] for item in marcacoes if item["data"] >= segunda)
-        gastos = float(config.get("gastos_fixos", 0)) + float(config.get("custo_produtos", 0))
+        
+        gastos_fixos = float(config.get("gastos_fixos", 0))
+        custo_produtos = float(config.get("custo_produtos", 0))
+        
         return {
-            "faturamento_bruto": total_ganho, "faturamento_semana": faturamento_semana,
-            "gastos_fixos": config.get("gastos_fixos", 0), "custo_produtos": config.get("custo_produtos", 0),
-            "lucro_liquido_real": total_ganho - gastos
+            "faturamento_bruto": total_ganho,
+            "faturamento_semana": faturamento_semana,
+            "gastos_fixos": gastos_fixos,
+            "custo_produtos": custo_produtos,
+            "lucro_liquido_real": total_ganho - (gastos_fixos + custo_produtos)
         }
-    except Exception: return None
+    except Exception:
+        return {
+            "faturamento_bruto": 0.0, "faturamento_semana": 0.0,
+            "gastos_fixos": 0.0, "custo_produtos": 0.0, "lucro_liquido_real": 0.0
+        }
 
 def verificar_clientes_para_lembrete():
     try:
