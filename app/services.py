@@ -162,26 +162,32 @@ def obter_slots_livres(data_iso: str, duracao: int):
         
         if not slots_reais: return []
 
+        # NOVA LÓGICA RESTRITIVA (ANTI-BURACO)
         if not marcacoes.data:
-            ancoras = [hr_abertura.strftime("%H:%M"), (hr_abertura + timedelta(minutes=30)).strftime("%H:%M"), "13:00", "13:30"]
+            # Se dia vazio, sugere apenas o início dos turnos
+            ancoras = [hr_abertura.strftime("%H:%M"), "13:00", "14:00"]
             return [s.strftime("%H:%M") for s in slots_reais if s.strftime("%H:%M") in ancoras]
 
         vizinhos = []
         for s in slots_reais:
             for o_ini, o_fim in ocupados:
+                # Sugere horários que "colam" no fim de alguém ou onde alguém começa logo depois
                 if s == o_fim or (s + timedelta(minutes=duracao)) == o_ini:
                     vizinhos.append(s.strftime("%H:%M"))
                     break
         
-        return sorted(list(set(vizinhos))) if vizinhos else [s.strftime("%H:%M") for s in slots_reais[:4]]
+        # Fallback: Se não houver vizinhos exatos, mostra apenas os 2 primeiros livres para manter a cascata
+        return sorted(list(set(vizinhos))) if vizinhos else [s.strftime("%H:%M") for s in slots_reais[:2]]
 
     except Exception: return []
 
 def agendar_servico(cliente: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
     try:
+        # Verificação exata por DATA e ID do usuário
         check = supabase.table("marcacoes").select("id").eq("data", data_iso).eq("chat_id", chat_id).neq("status", "Cancelada").execute()
         if check.data:
-            return "⚠️ Você já possui um agendamento para hoje! Fale com o barbeiro para alterar."
+            data_br = datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m")
+            return f"⚠️ Você já possui um agendamento para o dia {data_br}! Fale com o barbeiro para alterar."
 
         servico = obter_dados_servico_por_nome(servico_nome)
         if not servico: return "❌ Erro: Serviço não encontrado."

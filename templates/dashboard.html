@@ -10,9 +10,12 @@
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans">
 
+    <!-- Navbar -->
     <nav class="bg-gray-800 border-b border-gray-700 p-4 shadow-md">
         <div class="container mx-auto flex justify-between items-center">
-            <h1 class="text-2xl font-bold text-yellow-500"><i class="fas fa-scissors mr-2"></i>BarberDash</h1>
+            <h1 class="text-2xl font-bold text-yellow-500">
+                <i class="fas fa-scissors mr-2" aria-hidden="true"></i>BarberDash
+            </h1>
             <div class="text-right">
                 <p class="text-xs text-gray-400">Status do Sistema</p>
                 <span class="text-green-500 text-sm font-bold">● Online</span>
@@ -22,18 +25,19 @@
 
     <div class="container mx-auto p-4 md:p-8">
         
+        <!-- Cards de métricas -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
             <div class="bg-gray-800 p-6 rounded-2xl border border-gray-700 shadow-xl border-l-4 border-l-green-500">
                 <p class="text-gray-400 text-sm font-semibold uppercase tracking-wider">Ganhos da Semana</p>
                 <h2 class="text-3xl font-extrabold text-white mt-2">
-                    R$ {{ dash.faturamento_semana | default(0.0) | shadow_format }}
+                    R$ {{ "%.2f"|format(dash.faturamento_semana | default(0.0)) }}
                 </h2>
             </div>
 
             <div class="bg-gray-800 p-6 rounded-2xl border border-gray-700 shadow-xl border-l-4 border-l-blue-500">
                 <p class="text-gray-400 text-sm font-semibold uppercase tracking-wider">Lucro Líquido Real</p>
                 <h2 class="text-3xl font-extrabold text-white mt-2">
-                    R$ {{ dash.lucro_liquido_real | default(0.0) | shadow_format }}
+                    R$ {{ "%.2f"|format(dash.lucro_liquido_real | default(0.0)) }}
                 </h2>
             </div>
 
@@ -42,19 +46,22 @@
                 <h2 class="text-3xl font-extrabold text-white mt-2">
                     {% set fixo = dash.gastos_fixos | default(0.0) %}
                     {% set prod = dash.custo_produtos | default(0.0) %}
-                    R$ {{ (fixo + prod) | shadow_format }}
+                    R$ {{ "%.2f"|format(fixo + prod) }}
                 </h2>
             </div>
         </div>
 
+        <!-- Agenda -->
         <div class="bg-gray-800 rounded-2xl border border-gray-700 shadow-2xl overflow-hidden">
             <div class="p-6 border-b border-gray-700 flex flex-col md:flex-row justify-between items-center gap-4">
-                <h3 class="text-xl font-bold italic"><i class="far fa-calendar-check mr-2 text-yellow-500"></i>Agenda de Hoje</h3>
+                <h3 class="text-xl font-bold italic">
+                    <i class="far fa-calendar-check mr-2 text-yellow-500" aria-hidden="true"></i>Agenda de Hoje
+                </h3>
                 <span class="bg-yellow-500 text-gray-900 px-4 py-1 rounded-full text-sm font-black uppercase">{{ hoje }}</span>
             </div>
             
             <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
+                <table class="w-full text-left border-collapse text-sm md:text-base">
                     <thead class="bg-gray-700/50 text-gray-300 text-xs uppercase">
                         <tr>
                             <th class="p-4 font-bold">Horário</th>
@@ -67,7 +74,7 @@
                         {% for item in agenda %}
                         <tr class="hover:bg-gray-700/30 transition-colors">
                             <td class="p-4 font-mono text-yellow-500 font-bold">
-                                {{ item.hora | string | truncate(5, True, '') }}
+                                {{ item.hora[:5] }}
                             </td>
                             <td class="p-4">
                                 <p class="font-bold text-white">{{ item.cliente }}</p>
@@ -93,6 +100,7 @@
             </div>
         </div>
 
+        <!-- Rodapé -->
         <footer class="mt-10 text-center text-gray-600 text-xs">
             &copy; 2024 BarberDash System - Gerenciamento Inteligente via AI
         </footer>
