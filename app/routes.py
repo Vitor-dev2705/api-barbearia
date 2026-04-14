@@ -116,7 +116,6 @@ async def bot_recebe_mensagem(request: Request):
             query = dados["callback_query"]; chat_id = query["message"]["chat"]["id"]
             msg_id = query["message"]["message_id"]; dados_clique = query["data"]
             
-            # Captura nome e sobrenome automático do Telegram
             f_name = query["from"].get("first_name", "")
             l_name = query["from"].get("last_name", "")
             nome_user_completo = f"{f_name} {l_name}".strip()
@@ -131,21 +130,34 @@ async def bot_recebe_mensagem(request: Request):
                     editar_mensagem_com_botoes(chat_id, msg_id, "🛠️ **Painel Admin**", gerar_menu_principal_admin())
                 elif dados_clique == "ADM|CALENDARIO":
                     editar_mensagem_com_botoes(chat_id, msg_id, "📅 **Agenda**", gerar_botoes_calendario_admin())
+                
+                # --- GESTÃO DE SERVIÇOS MELHORADA ---
                 elif dados_clique == "ADM|SERVICOS":
                     servs = obter_servicos_db()
-                    txt = "📋 **Gestão de Serviços**\n\n"
+                    txt = "📋 **Gestão de Serviços**\n\nSelecione o serviço para **EXCLUIR**:\n\n"
                     btns = []
                     for s in servs:
-                        txt += f"🔹 {s['nome']} - R$ {s['preco']:.2f}\n"
-                        btns.append([{"text": f"🗑 Excluir {s['nome']}", "callback_data": f"ADM|DEL|{s['id']}"}])
-                    txt += "\n✨ _Para adicionar/editar:_\n`add Nome, Valor`"
+                        txt += f"🔹 {s['nome']} - R$ {s['preco']:.2f} (⏰ {s.get('duracao_minutos', 30)} min)\n"
+                        btns.append([{"text": f"🗑️ Excluir {s['nome']}", "callback_data": f"ADM|CONFIRM_DEL|{s['id']}|{s['nome']}"}])
+                    txt += "\n✨ _Para adicionar:_\n`add Nome, Preço, Minutos`"
                     btns.append([{"text": "⬅️ Voltar", "callback_data": "ADM|MENU"}])
                     editar_mensagem_com_botoes(chat_id, msg_id, txt, btns)
-                elif dados_clique.startswith("ADM|DEL|"):
+
+                elif dados_clique.startswith("ADM|CONFIRM_DEL|"):
+                    _, _, id_s, nome_s = dados_clique.split("|")
+                    txt = f"⚠️ **CONFIRMAR EXCLUSÃO**\n\nDeseja remover o serviço: **{nome_s}**?"
+                    btns = [
+                        [{"text": "✅ Sim, Excluir", "callback_data": f"ADM|DEL_FINAL|{id_s}"}],
+                        [{"text": "❌ Não, Cancelar", "callback_data": "ADM|SERVICOS"}]
+                    ]
+                    editar_mensagem_com_botoes(chat_id, msg_id, txt, btns)
+
+                elif dados_clique.startswith("ADM|DEL_FINAL|"):
                     id_s = dados_clique.split("|")[2]
                     deletar_servico_db(int(id_s))
                     enviar_mensagem_telegram(chat_id, "✅ Serviço removido!")
                     editar_mensagem_com_botoes(chat_id, msg_id, "🛠️ **Painel Admin**", gerar_menu_principal_admin())
+
                 elif dados_clique == "ADM|DASH":
                     d = gerar_dashboard()
                     txt = f"💰 **Financeiro**\n\n🔹 **Semana:** R$ {d['faturamento_semana']:.2f}\n🔹 **Total:** R$ {d['faturamento_bruto']:.2f}\n---------------------------\n💎 **LUCRO:** R$ {d['lucro_liquido_real']:.2f}"
@@ -186,7 +198,7 @@ async def bot_recebe_mensagem(request: Request):
                         b_dias.append([{"text": (hj + timedelta(days=i)).strftime("%d/%m"), "callback_data": f"D|{serv_nome}|{dt_iso}"}])
                 enviar_mensagem_com_botoes(chat_id, f"📅 Para quando o {serv_nome}?", b_dias)
             elif dados_clique.startswith("D|"):
-                _, s, d = dados_clique.split("|"); slots = obter_slots_livres(d, obter_duracao_servico(s)); b_hrs, lin = [], []
+                _, s, d = dados_clique.split("|"); slots = obter_slots_livres(d, obter_duracao_servico(s)); b_hrs, lin = [] , []
                 for h in slots:
                     lin.append({"text": h, "callback_data": f"H|{s}|{d}|{h}"})
                     if len(lin) == 3: b_hrs.append(lin); lin = []
@@ -206,10 +218,13 @@ async def bot_recebe_mensagem(request: Request):
         if str(id_admin) == str(chat_id):
             if texto_cru.lower().startswith("add "):
                 try:
-                    nome_s, preco_s = texto_cru[4:].split(",")
-                    salvar_servico_db(nome_s.strip(), float(preco_s.strip()))
-                    enviar_mensagem_telegram(chat_id, f"✅ Serviço {nome_s} salvo!")
-                except: enviar_mensagem_telegram(chat_id, "❌ Use: `add Nome, Valor`")
+                    partes = texto_cru[4:].split(",")
+                    nome_s = partes[0].strip()
+                    preco_s = float(partes[1].strip())
+                    duracao_s = int(partes[2].strip()) if len(partes) > 2 else 30
+                    salvar_servico_db(nome_s, preco_s, duracao_s)
+                    enviar_mensagem_telegram(chat_id, f"✅ Serviço {nome_s} salvo com {duracao_s} min!")
+                except: enviar_mensagem_telegram(chat_id, "❌ Use: `add Nome, Preço, Minutos`")
                 return {"status": "ok"}
         
         if texto_cru.lower().startswith("admin "):
@@ -241,11 +256,7 @@ async def bot_recebe_mensagem(request: Request):
 async def ver_painel_grafico(request: Request):
     try:
         hoje_iso = (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
-        
-        # 1. Puxa os dados financeiros (já tratados para nunca serem None)
         dash_data = gerar_dashboard()
-        
-        # 2. Puxa a lista de agendamentos de hoje do Supabase
         try:
             res = supabase.table("marcacoes").select("*").eq("data", hoje_iso).neq("status", "Cancelada").order("hora").execute()
             agenda_dia = res.data if res.data else []
@@ -253,7 +264,6 @@ async def ver_painel_grafico(request: Request):
             print(f"Erro ao carregar agenda web: {e}")
             agenda_dia = []
 
-        # 3. Renderiza o HTML passando os dados
         return templates.TemplateResponse("dashboard.html", {
             "request": request,
             "dash": dash_data,

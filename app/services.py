@@ -118,73 +118,61 @@ def obter_dados_servico_por_nome(nome_servico: str):
     except Exception: return None
 
 # ==========================================
-# LÓGICA DE AGENDAMENTO (CASCATA ANTI-BURACO)
+# LÓGICA DE AGENDAMENTO (CÁLCULO DINÂMICO DE DURAÇÃO)
 # ==========================================
 def obter_duracao_servico(nome_servico: str):
     servico = obter_dados_servico_por_nome(nome_servico)
-    return servico["duracao_minutos"] if servico else 30
+    return int(servico["duracao_minutos"]) if servico else 30
 
-def obter_slots_livres(data_iso: str, duracao: int):
+def obter_slots_livres(data_iso: str, duracao_novo: int):
     try:
-        duracao = int(duracao) if duracao else 30
+        duracao_novo = int(duracao_novo)
         data_obj = datetime.strptime(data_iso, "%Y-%m-%d")
         expediente = supabase.table("expediente").select("*").eq("dia_semana", data_obj.weekday()).execute()
         dados_exp = expediente.data[0] if expediente.data else None
 
         if not dados_exp or not dados_exp.get('aberto', False): return []
         
-        str_ab = str(dados_exp.get('hora_abertura', '09:00'))[:5]
-        str_fe = str(dados_exp.get('hora_fechamento', '18:00'))[:5]
-        hr_abertura = datetime.strptime(str_ab, "%H:%M")
-        hr_fechamento = datetime.strptime(str_fe, "%H:%M")
+        hr_abertura = datetime.strptime(str(dados_exp.get('hora_abertura', '09:00'))[:5], "%H:%M")
+        hr_fechamento = datetime.strptime(str(dados_exp.get('hora_fechamento', '18:00'))[:5], "%H:%M")
 
-        marcacoes = supabase.table("marcacoes").select("hora, servico").eq("data", data_iso).neq("status", "Cancelada").execute()
+        # Busca marcações ordenadas para calcular o fim de cada uma
+        marcacoes = supabase.table("marcacoes").select("hora, servico").eq("data", data_iso).neq("status", "Cancelada").order("hora").execute()
+        
         ocupados = []
         for m in (marcacoes.data or []):
             try:
                 inicio = datetime.strptime(str(m['hora'])[:5].strip(), "%H:%M")
-                fim = inicio + timedelta(minutes=obter_duracao_servico(m['servico']))
-                ocupados.append((inicio, fim))
+                dur_m = obter_duracao_servico(m['servico'])
+                fim = inicio + timedelta(minutes=dur_m)
+                ocupados.append({"inicio": inicio, "fim": fim})
             except Exception: continue
 
-        slots_reais = []
-        atual = hr_abertura
         fuso_br = datetime.utcnow() - timedelta(hours=3)
-        while atual + timedelta(minutes=duracao) <= hr_fechamento:
-            if not (data_iso == fuso_br.strftime("%Y-%m-%d") and atual.time() <= fuso_br.time()):
-                conflito = False
-                for (o_ini, o_fim) in ocupados:
-                    if atual < o_fim and (atual + timedelta(minutes=duracao)) > o_ini:
-                        conflito = True
-                        break
-                if not conflito: slots_reais.append(atual)
-            atual += timedelta(minutes=30)
         
-        if not slots_reais: return []
+        # --- LÓGICA ANTI-BURACO COM CÁLCULO DE TÉRMINO ---
+        if not ocupados:
+            # Dia Vazio: Libera o início do expediente (ajustado se for hoje)
+            if data_iso == fuso_br.strftime("%Y-%m-%d") and hr_abertura.time() <= fuso_br.time():
+                min_atual = fuso_br.minute
+                proximo_redondo = fuso_br + timedelta(minutes=(30 - min_atual % 30))
+                return [proximo_redondo.strftime("%H:%M")]
+            return [hr_abertura.strftime("%H:%M")]
 
-        # --- LÓGICA ANTI-BURACO ULTRA RESTRITIVA ---
-        if not marcacoes.data:
-            # Dia Vazio: SÓ libera o primeiro slot do dia.
-            primeiro_slot = hr_abertura.strftime("%H:%M")
-            return [primeiro_slot] if any(s.strftime("%H:%M") == primeiro_slot for s in slots_reais) else []
-
-        vizinhos = []
-        for s in slots_reais:
-            for o_ini, o_fim in ocupados:
-                # Libera apenas slots colados em agendamentos existentes (vizinhos)
-                if s == o_fim or (s + timedelta(minutes=duracao)) == o_ini:
-                    vizinhos.append(s.strftime("%H:%M"))
-                    break
+        # Próximo horário disponível é EXATAMENTE onde o último terminou
+        ultimo_fim = ocupados[-1]["fim"]
         
-        resultado = sorted(list(set(vizinhos)))
-        # Fallback: Se não houver vizinhos livres (ex: buraco grande), mostra o primeiro disponível da cascata
-        return resultado if resultado else [slots_reais[0].strftime("%H:%M")]
+        # Verifica se cabe o novo serviço antes de fechar a barbearia
+        if ultimo_fim + timedelta(minutes=duracao_novo) <= hr_fechamento:
+            if not (data_iso == fuso_br.strftime("%Y-%m-%d") and ultimo_fim.time() <= fuso_br.time()):
+                return [ultimo_fim.strftime("%H:%M")]
+        
+        return [] # Agenda lotada para esta duração
 
     except Exception: return []
 
 def agendar_servico(cliente: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
     try:
-        # Trava: Verifica agendamento nesta DATA específica para este usuário
         check = supabase.table("marcacoes").select("id").eq("data", data_iso).eq("chat_id", chat_id).neq("status", "Cancelada").execute()
         if check.data:
             data_br = datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m")
