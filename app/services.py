@@ -162,28 +162,29 @@ def obter_slots_livres(data_iso: str, duracao: int):
         
         if not slots_reais: return []
 
-        # NOVA LÓGICA RESTRITIVA (ANTI-BURACO)
+        # --- LÓGICA ANTI-BURACO ULTRA RESTRITIVA ---
         if not marcacoes.data:
-            # Se dia vazio, sugere apenas o início dos turnos
-            ancoras = [hr_abertura.strftime("%H:%M"), "13:00", "14:00"]
-            return [s.strftime("%H:%M") for s in slots_reais if s.strftime("%H:%M") in ancoras]
+            # Dia Vazio: SÓ libera o primeiro slot do dia.
+            primeiro_slot = hr_abertura.strftime("%H:%M")
+            return [primeiro_slot] if any(s.strftime("%H:%M") == primeiro_slot for s in slots_reais) else []
 
         vizinhos = []
         for s in slots_reais:
             for o_ini, o_fim in ocupados:
-                # Sugere horários que "colam" no fim de alguém ou onde alguém começa logo depois
+                # Libera apenas slots colados em agendamentos existentes (vizinhos)
                 if s == o_fim or (s + timedelta(minutes=duracao)) == o_ini:
                     vizinhos.append(s.strftime("%H:%M"))
                     break
         
-        # Fallback: Se não houver vizinhos exatos, mostra apenas os 2 primeiros livres para manter a cascata
-        return sorted(list(set(vizinhos))) if vizinhos else [s.strftime("%H:%M") for s in slots_reais[:2]]
+        resultado = sorted(list(set(vizinhos)))
+        # Fallback: Se não houver vizinhos livres (ex: buraco grande), mostra o primeiro disponível da cascata
+        return resultado if resultado else [slots_reais[0].strftime("%H:%M")]
 
     except Exception: return []
 
 def agendar_servico(cliente: str, servico_nome: str, data_iso: str, hora: str, chat_id: int):
     try:
-        # Verificação exata por DATA e ID do usuário
+        # Trava: Verifica agendamento nesta DATA específica para este usuário
         check = supabase.table("marcacoes").select("id").eq("data", data_iso).eq("chat_id", chat_id).neq("status", "Cancelada").execute()
         if check.data:
             data_br = datetime.strptime(data_iso, "%Y-%m-%d").strftime("%d/%m")
